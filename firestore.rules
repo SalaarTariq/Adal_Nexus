@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===== USERS COLLECTION =====
+    // Users can read/write their own profile
+    // Others can only read public profiles
+    match /users/{userId} {
+      allow read: if true; // Anyone can read user profiles (public)
+      allow create: if request.auth.uid == userId; // Only user can create their own profile
+      allow update, delete: if request.auth.uid == userId; // Only user can update their own profile
+    }
+    
+    // ===== POSTS COLLECTION =====
+    // Anyone can read posts
+    // Authenticated users can create
+    // Only author can update/delete
+    match /posts/{postId} {
+      allow read: if true; // Anyone can read posts
+      allow create: if request.auth != null && request.auth.uid == resource.data.authorId; // Authenticated users can create
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorId; // Only author can edit/delete
+    }
+    
+    // ===== POST LIKES =====
+    // Anyone can read likes
+    // Authenticated users can add/remove their own likes
+    match /post_likes/{likeId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow update: if false; // Likes should not be updated, only created/deleted
+    }
+    
+    // ===== FORUM THREADS =====
+    // Anyone can read threads
+    // Authenticated users can create
+    // Only author can update/delete
+    match /forumThreads/{threadId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.authorId;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorId;
+    }
+    
+    // ===== FORUM REPLIES =====
+    // Anyone can read replies
+    // Authenticated users can create
+    // Only author can update/delete
+    match /forumReplies/{replyId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.authorId;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.authorId;
+    }
+    
+    // ===== FORUM REPLY UPVOTES =====
+    // Anyone can read upvotes
+    // Authenticated users can add/remove their own upvotes
+    match /forum_reply_upvotes/{upvoteId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow update: if false; // Upvotes should not be updated, only created/deleted
+    }
+    
+    // ===== ROADMAP PROGRESS =====
+    // Users can only read/write their own roadmap progress
+    match /roadmapProgress/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ===== CHAT MEMORY =====
+    // Users can store and read their own chat memory under their user document
+    match /users/{userId}/chatMessages/{messageId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Deny all other access by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
