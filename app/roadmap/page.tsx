@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/app/providers';
 import { getRoadmapProgress, updateMilestone } from '@/lib/firestore';
-import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Loader2, Check, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
@@ -195,7 +194,7 @@ export default function RoadmapPage() {
                 </div>
 
                 <div className="space-y-2">
-                  {Object.entries(yearData).map(([milestone, _]) => {
+                  {Object.entries(yearData).map(([milestone]) => {
                     const isCompleted = progress[yearKey]?.[milestone] ?? false;
                     const isUpdating =
                       updatingMilestone === `${yearKey}-${milestone}`;

@@ -74,7 +74,7 @@ if (app && process.env.NODE_ENV === 'development' && typeof window !== 'undefine
       console.log('🔥 Firebase Emulators connected');
     }
   } catch (error) {
-    // Emulators may not be running; continue with production config.
+    console.warn('Firebase emulator connection skipped:', error);
   }
 }
 

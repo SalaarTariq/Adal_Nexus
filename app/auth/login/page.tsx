@@ -42,7 +42,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-50 px-4">
       <Card className="w-full max-w-md p-8 shadow-lg">
         <h1 className="text-3xl font-bold text-center text-gray-900 mb-2 font-serif">Adal Nexus</h1>
-        <p className="text-center text-gray-600 mb-8">Pakistan's Legal Community Platform</p>
+        <p className="text-center text-gray-600 mb-8">Pakistan&apos;s Legal Community Platform</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Email */}
@@ -96,7 +96,7 @@ export default function LoginPage() {
 
         {/* Signup Link */}
         <p className="text-center text-gray-600 mt-6">
-          Don't have an account?{' '}
+          Don&apos;t have an account?{' '}
           <Link href="/auth/signup" className="text-indigo-600 hover:text-indigo-700 font-semibold">
             Sign up
           </Link>

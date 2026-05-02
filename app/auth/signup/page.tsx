@@ -44,7 +44,7 @@ export default function SignupPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-50 px-4">
       <Card className="w-full max-w-md p-8 shadow-lg">
         <h1 className="text-3xl font-bold text-center text-gray-900 mb-2 font-serif">Adal Nexus</h1>
-        <p className="text-center text-gray-600 mb-8">Join Pakistan's Legal Community</p>
+        <p className="text-center text-gray-600 mb-8">Join Pakistan&apos;s Legal Community</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Full Name */}

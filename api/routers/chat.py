@@ -83,7 +83,7 @@ async def chat(
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             temperature=0.7,
-            max_tokens=500,
+            max_tokens=4000,
             messages=messages,
         )
 
