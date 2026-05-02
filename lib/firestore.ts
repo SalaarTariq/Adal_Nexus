@@ -17,11 +17,24 @@ import {
   query,
   where,
   orderBy,
-  limit,
-  Query,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import type { User } from 'firebase/auth';
+import { db, auth } from './firebase';
+
+/**
+ * Helper to get current user's Firebase ID token.
+ */
+export async function getAuthToken(): Promise<string | null> {
+  const user = auth.currentUser;
+  if (!user) return null;
+  try {
+    return await user.getIdToken();
+  } catch (error) {
+    console.error('Error getting ID token:', error);
+    return null;
+  }
+}
 
 // ===== CHAT MEMORY =====
 
@@ -82,6 +95,91 @@ export async function clearChatMemory(userId: string) {
   }
 }
 
+// ===== CHAT SESSIONS =====
+
+export interface ChatSessionMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Timestamp;
+}
+
+export interface ChatSession {
+  sessionId: string;
+  userId: string;
+  title: string;
+  messages: ChatSessionMessage[];
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export async function getChatSessions(userId: string) {
+  try {
+    const sessionsRef = collection(db, 'chat_sessions');
+    const q = query(sessionsRef, where('userId', '==', userId));
+    const docs = await getDocs(q);
+
+    const sessions = docs.docs.map((docSnap) => ({
+      sessionId: docSnap.id,
+      ...docSnap.data(),
+    })) as ChatSession[];
+
+    return sessions.sort((a, b) => {
+      const aTs = a.updatedAt?.toMillis?.() ?? 0;
+      const bTs = b.updatedAt?.toMillis?.() ?? 0;
+      return bTs - aTs;
+    });
+  } catch (error) {
+    console.error('Error fetching chat sessions:', error);
+    return [];
+  }
+}
+
+export async function createChatSession(userId: string, title = 'New Chat') {
+  try {
+    const sessionsRef = collection(db, 'chat_sessions');
+    const now = Timestamp.now();
+    const docRef = await addDoc(sessionsRef, {
+      userId,
+      title,
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { sessionId: docRef.id, success: true };
+  } catch (error) {
+    console.error('Error creating chat session:', error);
+    return { sessionId: '', success: false, error };
+  }
+}
+
+export async function updateChatSession(
+  sessionId: string,
+  updates: Partial<Pick<ChatSession, 'title' | 'messages'>>
+) {
+  try {
+    const sessionRef = doc(db, 'chat_sessions', sessionId);
+    await updateDoc(sessionRef, {
+      ...updates,
+      updatedAt: Timestamp.now(),
+    });
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating chat session:', error);
+    return { success: false, error };
+  }
+}
+
+export async function deleteChatSession(sessionId: string) {
+  try {
+    await deleteDoc(doc(db, 'chat_sessions', sessionId));
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting chat session:', error);
+    return { success: false, error };
+  }
+}
+
 // ===== POSTS =====
 
 export interface Post {
@@ -96,65 +194,104 @@ export interface Post {
 
 export async function getPosts(pageSize = 20, pageOffset = 0) {
   try {
-    const postsRef = collection(db, 'posts');
-    const q = query(postsRef, orderBy('createdAt', 'desc'), limit(pageSize));
-    const docs = await getDocs(q);
-    return docs.docs.map((doc) => ({
-      postId: doc.id,
-      ...doc.data(),
-    })) as Post[];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+    const response = await fetch(`/api/posts?skip=${pageOffset}&limit=${pageSize}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    const posts = await response.json();
+    return posts as Post[];
   } catch (error) {
-    console.error('Error fetching posts:', error);
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('Posts request timed out');
+      return [];
+    }
+    console.error('Error fetching posts via API:', error);
     return [];
   }
 }
 
 export async function createPost(
-  authorId: string,
+  user: User,
   title: string,
   content: string,
   tags: string[] = []
 ) {
   try {
-    const postsRef = collection(db, 'posts');
-    const docRef = await addDoc(postsRef, {
-      title,
-      content,
-      tags,
-      authorId,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+    const token = await user.getIdToken();
+    const response = await fetch('/api/posts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ title, content, tags }),
     });
-    return { postId: docRef.id, success: true };
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { postId: data.postId, success: true };
   } catch (error) {
-    console.error('Error creating post:', error);
-    return { postId: '', success: false, error };
+    console.error('Error creating post via API:', error);
+    return { postId: '', success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export async function likePost(postId: string, userId: string) {
+export async function deletePost(postId: string, user: User) {
   try {
-    const likesRef = collection(db, 'post_likes');
-    // Check if already liked
-    const q = query(likesRef, where('postId', '==', postId), where('userId', '==', userId));
-    const existing = await getDocs(q);
+    const token = await user.getIdToken();
+    const response = await fetch(`/api/posts/${postId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
 
-    if (existing.size > 0) {
-      // Unlike: delete the document
-      await deleteDoc(existing.docs[0].ref);
-      return { liked: false, success: true };
-    } else {
-      // Like: add new document
-      await addDoc(likesRef, {
-        postId,
-        userId,
-        createdAt: Timestamp.now(),
-      });
-      return { liked: true, success: true };
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
     }
+
+    return { success: true };
   } catch (error) {
-    console.error('Error liking post:', error);
-    return { liked: false, success: false, error };
+    console.error('Error deleting post via API:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function likePost(postId: string, user: User) {
+  try {
+    const token = await user.getIdToken();
+    const response = await fetch(`/api/posts/${postId}/like`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { liked: data.liked, success: true };
+  } catch (error) {
+    console.error('Error toggling like via API:', error);
+    return { liked: false, success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -186,63 +323,78 @@ export interface ForumThread {
 
 export async function getForumThreads(
   category?: string,
-  tags?: string[],
-  pageSize = 20,
-  pageOffset = 0
+  pageOffset = 0,
+  pageSize = 20
 ) {
   try {
-    const threadsRef = collection(db, 'forumThreads');
-    let q: Query;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-    if (category) {
-      q = query(threadsRef, where('category', '==', category), orderBy('createdAt', 'desc'), limit(pageSize));
-    } else {
-      q = query(threadsRef, orderBy('createdAt', 'desc'), limit(pageSize));
+    const url = new URL('/api/forum/threads', window.location.origin);
+    if (category) url.searchParams.append('category', category);
+    url.searchParams.append('skip', pageOffset.toString());
+    url.searchParams.append('limit', pageSize.toString());
+
+    const response = await fetch(url.toString(), {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
     }
-
-    const docs = await getDocs(q);
-    let threads = docs.docs.map((doc) => ({
-      threadId: doc.id,
-      ...doc.data(),
-    })) as ForumThread[];
-
-    // Client-side filter by tags if provided
-    if (tags && tags.length > 0) {
-      threads = threads.filter((t) =>
-        tags.some((tag) => t.tags.includes(tag))
-      );
-    }
-
-    return threads;
+    const threads = await response.json();
+    return threads as ForumThread[];
   } catch (error) {
-    console.error('Error fetching forum threads:', error);
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('Forum threads request timed out');
+      return [];
+    }
+    console.error('Error fetching forum threads via API:', error);
     return [];
   }
 }
 
 export async function createForumThread(
-  authorId: string,
+  user: User | string | null,
   title: string,
   description: string,
   category: string,
   tags: string[] = []
 ) {
   try {
-    const threadsRef = collection(db, 'forumThreads');
-    const docRef = await addDoc(threadsRef, {
-      title,
-      description,
-      category,
-      tags,
-      authorId,
-      replyCount: 0,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+    // Handle case where user might actually be the current user from auth
+    let currentUser: User | null = typeof user === 'string' ? null : user;
+    if (!currentUser) {
+      // If user is a string (uid) or null, get current user
+      currentUser = auth.currentUser;
+    }
+
+    if (!currentUser) {
+      throw new Error('User not authenticated');
+    }
+
+    const token = await currentUser.getIdToken();
+    const response = await fetch('/api/forum/threads', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ title, description, category, tags }),
     });
-    return { threadId: docRef.id, success: true };
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { threadId: data.threadId, success: true };
   } catch (error) {
-    console.error('Error creating forum thread:', error);
-    return { threadId: '', success: false, error };
+    console.error('Error creating forum thread via API:', error);
+    return { threadId: '', success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -254,86 +406,114 @@ export interface ForumReply {
   content: string;
   authorId: string;
   upvoteCount: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
+  createdAt: Timestamp | string;
+  updatedAt: Timestamp | string;
 }
 
 export async function getForumReplies(threadId: string) {
   try {
-    const repliesRef = collection(db, 'forumReplies');
-    const q = query(repliesRef, where('threadId', '==', threadId), orderBy('createdAt', 'asc'));
-    const docs = await getDocs(q);
-    return docs.docs.map((doc) => ({
-      replyId: doc.id,
-      ...doc.data(),
-    })) as ForumReply[];
+    const response = await fetch(`/api/forum/threads/${threadId}/replies`);
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    const replies = await response.json();
+    return replies as ForumReply[];
   } catch (error) {
-    console.error('Error fetching forum replies:', error);
-    return [];
+    console.error('Error fetching forum replies via API:', error);
+    try {
+      const repliesRef = collection(db, 'forumReplies');
+      const q = query(repliesRef, where('threadId', '==', threadId));
+      const docs = await getDocs(q);
+      const replies = docs.docs.map((docSnap) => ({
+        replyId: docSnap.id,
+        ...(docSnap.data() as Omit<ForumReply, 'replyId'>),
+      }));
+      return replies.sort((a, b) => {
+        const aValue = a.createdAt instanceof Timestamp ? a.createdAt.toMillis() : Date.parse(String(a.createdAt));
+        const bValue = b.createdAt instanceof Timestamp ? b.createdAt.toMillis() : Date.parse(String(b.createdAt));
+        return aValue - bValue;
+      });
+    } catch (fallbackError) {
+      console.error('Error fetching forum replies via Firestore:', fallbackError);
+      return [];
+    }
   }
 }
 
 export async function addForumReply(
   threadId: string,
-  authorId: string,
+  user: User | string | null,
   content: string
 ) {
   try {
-    const repliesRef = collection(db, 'forumReplies');
-    const docRef = await addDoc(repliesRef, {
-      threadId,
-      content,
-      authorId,
-      upvoteCount: 0,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+    let currentUser: User | null = typeof user === 'string' ? null : user;
+    if (!currentUser) {
+      currentUser = auth.currentUser;
+    }
+
+    if (!currentUser) {
+      throw new Error('User not authenticated');
+    }
+
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`/api/forum/threads/${threadId}/replies`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ content }),
     });
 
-    // Increment thread's replyCount
-    const threadRef = doc(db, 'forumThreads', threadId);
-    const threadSnap = await getDoc(threadRef);
-    await updateDoc(threadRef, {
-      replyCount: (threadSnap.data()?.replyCount || 0) + 1,
-    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
 
-    return { replyId: docRef.id, success: true };
+    const data = (await response.json()) as ForumReply;
+    return { replyId: data.replyId, reply: data, success: true };
   } catch (error) {
-    console.error('Error adding forum reply:', error);
-    return { replyId: '', success: false, error };
+    console.error('Error adding forum reply via API:', error);
+    return {
+      replyId: '',
+      reply: null,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
-export async function upvoteReply(replyId: string, userId: string) {
+export async function upvoteReply(replyId: string, user: User | string | null) {
   try {
-    const upvotesRef = collection(db, 'forum_reply_upvotes');
-    // Check if already upvoted
-    const q = query(upvotesRef, where('replyId', '==', replyId), where('userId', '==', userId));
-    const existing = await getDocs(q);
-
-    if (existing.size > 0) {
-      // Remove upvote
-      await deleteDoc(existing.docs[0].ref);
-      const replyRef = doc(db, 'forumReplies', replyId);
-      await updateDoc(replyRef, {
-        upvoteCount: Math.max(0, ((await getDoc(replyRef)).data()?.upvoteCount || 0) - 1),
-      });
-      return { upvoted: false, success: true };
-    } else {
-      // Add upvote
-      await addDoc(upvotesRef, {
-        replyId,
-        userId,
-        createdAt: Timestamp.now(),
-      });
-      const replyRef = doc(db, 'forumReplies', replyId);
-      await updateDoc(replyRef, {
-        upvoteCount: ((await getDoc(replyRef)).data()?.upvoteCount || 0) + 1,
-      });
-      return { upvoted: true, success: true };
+    let currentUser: User | null = typeof user === 'string' ? null : user;
+    if (!currentUser) {
+      currentUser = auth.currentUser;
     }
+
+    if (!currentUser) {
+      throw new Error('User not authenticated');
+    }
+
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`/api/forum/replies/${replyId}/upvote`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { upvoted: data.upvoted, success: true };
   } catch (error) {
-    console.error('Error upvoting reply:', error);
-    return { upvoted: false, success: false, error };
+    console.error('Error upvoting reply via API:', error);
+    return { upvoted: false, success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -410,6 +590,36 @@ export async function updateMilestone(
 
 // ===== USERS (PROFILE) =====
 
+export interface Achievement {
+  title: string;
+  year: string;
+  description?: string;
+}
+
+export interface Experience {
+  title: string;
+  organization: string;
+  startDate: string;
+  endDate?: string;
+  description?: string;
+  current?: boolean;
+}
+
+export interface Project {
+  title: string;
+  role?: string;
+  description: string;
+  link?: string;
+  year?: string;
+}
+
+export interface SocialLinks {
+  linkedin?: string;
+  twitter?: string;
+  github?: string;
+  website?: string;
+}
+
 export interface UserProfile {
   uid: string;
   name: string;
@@ -419,6 +629,10 @@ export interface UserProfile {
   year?: number;
   specialisations: string[];
   bio: string;
+  experience?: Experience[];
+  achievements?: Achievement[];
+  projects?: Project[];
+  socialLinks?: SocialLinks;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -445,44 +659,76 @@ export async function createUserProfile(
   userType: 'student' | 'lawyer' | 'judge' = 'student'
 ) {
   try {
-    const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, {
-      name,
-      email,
-      userType,
-      profilePhotoURL: '',
-      year: userType === 'student' ? 1 : undefined,
-      specialisations: [],
-      bio: '',
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+    // Get Firebase token from the current user (who was just created)
+    const user = auth.currentUser;
+    if (!user) {
+      return { success: false, error: 'No authenticated user found' };
+    }
+    
+    const token = await user.getIdToken();
+    
+    // Call backend endpoint to create profile (uses admin privileges)
+    const response = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        name,
+        email,
+        userType,
+      }),
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Profile creation API error (${response.status}):`, errorText);
+      throw new Error(`Failed to create profile: ${response.status}`);
+    }
+
     return { success: true };
   } catch (error) {
     console.error('Error creating user profile:', error);
-    return { success: false, error };
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export async function updateUserProfile(userId: string, updates: Partial<UserProfile>) {
+export async function updateUserProfile(userOrUid: User | string, updates: Partial<UserProfile>) {
   try {
-    const userRef = doc(db, 'users', userId);
-    const safeUpdates: Record<string, any> = {
-      ...updates,
-      updatedAt: Timestamp.now(),
-      uid: undefined, // Remove uid from updates
-    };
-    // Remove undefined fields
-    Object.keys(safeUpdates).forEach((key) => {
-      if (safeUpdates[key] === undefined) {
-        delete safeUpdates[key];
+    // Handle both User object and uid string
+    let token: string;
+    
+    if (typeof userOrUid === 'string') {
+      // If uid string is passed, get token from current auth user
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        throw new Error('No authenticated user found');
       }
+      token = await currentUser.getIdToken();
+    } else {
+      // If User object is passed
+      token = await userOrUid.getIdToken();
+    }
+    
+    const response = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(updates),
     });
 
-    await updateDoc(userRef, safeUpdates);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`API error (${response.status}):`, errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+
     return { success: true };
   } catch (error) {
-    console.error('Error updating user profile:', error);
-    return { success: false, error };
+    console.error('Error updating user profile via API:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
