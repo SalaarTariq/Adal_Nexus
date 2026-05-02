@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -27,8 +27,10 @@ export default function ForumThreadPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [upvotingIds, setUpvotingIds] = useState<Set<string>>(new Set());
+  const [userUpvotes, setUserUpvotes] = useState<Set<string>>(new Set());
 
-  const loadThread = async () => {
+  const loadThread = useCallback(async () => {
     if (!params.id) return;
     try {
       setLoading(true);
@@ -44,11 +46,11 @@ export default function ForumThreadPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [params.id]);
 
   useEffect(() => {
     loadThread();
-  }, [params.id]);
+  }, [loadThread]);
 
   const handleReply = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -56,11 +58,20 @@ export default function ForumThreadPage() {
 
     try {
       setSending(true);
-      const result = await addForumReply(params.id, user.uid, replyText.trim());
+      setError('');
+      const result = await addForumReply(params.id, user, replyText.trim());
       if (result.success) {
         setReplyText('');
-        await loadThread();
+        if (result.reply) {
+          // Optimistic update: add reply to state immediately without page reload
+          setReplies((prev) => [...prev, result.reply as ForumReply]);
+          setThread((prev) =>
+            prev ? { ...prev, replyCount: (prev.replyCount ?? 0) + 1 } : prev
+          );
+        }
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to post reply');
     } finally {
       setSending(false);
     }
@@ -68,8 +79,79 @@ export default function ForumThreadPage() {
 
   const handleUpvote = async (replyId: string) => {
     if (!user) return;
-    await upvoteReply(replyId, user.uid);
-    await loadThread();
+    
+    // Prevent multiple simultaneous upvotes on the same reply
+    if (upvotingIds.has(replyId)) return;
+
+    // Mark this reply as being upvoted
+    setUpvotingIds((prev) => new Set([...prev, replyId]));
+
+    // Check current upvote state
+    const isCurrentlyUpvoted = userUpvotes.has(replyId);
+    
+    // Determine what the new state should be (toggle)
+    const willBeUpvoted = !isCurrentlyUpvoted;
+    
+    // Optimistic update: update the local state immediately
+    setReplies((prev) =>
+      prev.map((reply) =>
+        reply.replyId === replyId
+          ? { 
+              ...reply, 
+              upvoteCount: willBeUpvoted ? reply.upvoteCount + 1 : Math.max(0, reply.upvoteCount - 1)
+            }
+          : reply
+      )
+    );
+    
+    // Update user upvotes tracking
+    if (willBeUpvoted) {
+      setUserUpvotes((prev) => new Set([...prev, replyId]));
+    } else {
+      setUserUpvotes((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(replyId);
+        return newSet;
+      });
+    }
+
+    // Call API in background
+    try {
+      await upvoteReply(replyId, user);
+    } catch (err) {
+      console.error('Failed to upvote reply:', err);
+      // On error, revert BOTH the upvote count and the user upvotes tracking
+      setReplies((prev) =>
+        prev.map((reply) =>
+          reply.replyId === replyId
+            ? { 
+                ...reply, 
+                upvoteCount: isCurrentlyUpvoted ? reply.upvoteCount + 1 : Math.max(0, reply.upvoteCount - 1)
+              }
+            : reply
+        )
+      );
+      
+      // Revert user upvotes tracking
+      if (isCurrentlyUpvoted) {
+        setUserUpvotes((prev) => new Set([...prev, replyId]));
+      } else {
+        setUserUpvotes((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(replyId);
+          return newSet;
+        });
+      }
+      
+      setError('Failed to upvote reply');
+    } finally {
+      // Remove from upvoting set
+      setUpvotingIds((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(replyId);
+        return newSet;
+      });
+    }
   };
 
   if (loading || authLoading) {
@@ -159,7 +241,13 @@ export default function ForumThreadPage() {
                       <p className="font-medium text-gray-900">{reply.authorId}</p>
                       <p className="text-xs text-gray-500">Reply</p>
                     </div>
-                    <Button type="button" variant="outline" size="sm" onClick={() => handleUpvote(reply.replyId)}>
+                    <Button 
+                      type="button" 
+                      size="sm" 
+                      onClick={() => handleUpvote(reply.replyId)}
+                      disabled={upvotingIds.has(reply.replyId)}
+                      className={userUpvotes.has(reply.replyId) ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-100 hover:bg-gray-200'}
+                    >
                       <ThumbsUp className="mr-2 h-4 w-4" />
                       {reply.upvoteCount}
                     </Button>

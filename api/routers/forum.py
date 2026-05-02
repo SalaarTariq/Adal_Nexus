@@ -9,7 +9,7 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import firestore
 
-from api.main import verify_firebase_token, get_db
+from api.main import get_current_user_id, get_db
 
 router = APIRouter(prefix="/api", tags=["forum"])
 db = get_db()
@@ -24,6 +24,21 @@ VALID_CATEGORIES = [
     "Career Advice",
     "Legal Awareness",
 ]
+
+
+def _is_constitution_related(thread_data: dict) -> bool:
+    """Return True if thread appears to be constitution-focused."""
+    title = str(thread_data.get("title", "")).lower()
+    description = str(thread_data.get("description", "")).lower()
+    tags = [str(tag).lower() for tag in (thread_data.get("tags") or [])]
+
+    return (
+        "constitution" in title
+        or "constitutional" in title
+        or "constitution" in description
+        or "constitutional" in description
+        or any(tag in {"constitution", "constitutional"} for tag in tags)
+    )
 
 
 class ThreadCreate(BaseModel):
@@ -76,7 +91,7 @@ class ReplyResponse(BaseModel):
 @router.post("/forum/threads", response_model=ThreadResponse, status_code=status.HTTP_201_CREATED)
 async def create_thread(
     payload: ThreadCreate,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> ThreadResponse:
     """Create a new forum thread."""
     try:
@@ -146,7 +161,7 @@ async def list_threads(
 ) -> List[ThreadResponse]:
     """List all forum threads with optional category filter."""
     try:
-        threads = []
+        db = get_db()
         query = db.collection("forumThreads").order_by(
             "createdAt", direction=firestore.Query.DESCENDING
         )
@@ -157,11 +172,34 @@ async def list_threads(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
                 )
+
+            if category == "Constitutional":
+                # Compatibility behavior: include older constitution-related threads
+                # that were saved under "Legal Awareness".
+                docs = query.limit(max(limit * 5, 50)).get()
+                filtered_threads = []
+                for doc in docs:
+                    thread_data = doc.to_dict()
+                    if thread_data.get("category") == "Constitutional" or (
+                        thread_data.get("category") == "Legal Awareness"
+                        and _is_constitution_related(thread_data)
+                    ):
+                        filtered_threads.append(
+                            ThreadResponse(
+                                threadId=doc.id,
+                                **thread_data,
+                            )
+                        )
+
+                return filtered_threads[skip : skip + limit]
+
             query = query.where("category", "==", category)
 
         query = query.offset(skip).limit(limit)
 
-        for doc in query.stream():
+        docs = query.get()
+        threads = []
+        for doc in docs:
             thread_data = doc.to_dict()
             threads.append(
                 ThreadResponse(
@@ -184,7 +222,7 @@ async def list_threads(
 async def update_thread(
     thread_id: str,
     payload: ThreadUpdate,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> ThreadResponse:
     """Update a forum thread (only by author)."""
     try:
@@ -243,16 +281,14 @@ async def update_thread(
 )
 async def delete_thread(
     thread_id: str,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> None:
     """Delete a forum thread (only by author)."""
     try:
         doc = db.collection("forumThreads").document(thread_id).get()
         if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Thread not found",
-            )
+            # Idempotent delete
+            return Response(status_code=status.HTTP_200_OK)
 
         thread_data = doc.to_dict()
         if thread_data.get("authorId") != current_user_id:
@@ -298,7 +334,7 @@ async def delete_thread(
 async def create_reply(
     thread_id: str,
     payload: ReplyCreate,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> ReplyResponse:
     """Create a reply in a forum thread."""
     try:
@@ -346,6 +382,7 @@ async def create_reply(
 async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[ReplyResponse]:
     """List all replies for a thread."""
     try:
+        db = get_db()
         # Check if thread exists
         thread_doc = db.collection("forumThreads").document(thread_id).get()
         if not thread_doc.exists:
@@ -353,17 +390,14 @@ async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[R
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Thread not found",
             )
-
-        replies = []
-        query = (
+        docs = (
             db.collection("forumReplies")
             .where("threadId", "==", thread_id)
-            .order_by("createdAt", direction=firestore.Query.ASCENDING)
-            .offset(skip)
-            .limit(limit)
+            .get()
         )
 
-        for doc in query.stream():
+        replies = []
+        for doc in docs:
             reply_data = doc.to_dict()
             replies.append(
                 ReplyResponse(
@@ -372,7 +406,8 @@ async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[R
                 )
             )
 
-        return replies
+        replies.sort(key=lambda reply: reply.createdAt)
+        return replies[skip : skip + limit]
     except HTTPException:
         raise
     except Exception as e:
@@ -385,7 +420,7 @@ async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[R
 @router.post("/forum/replies/{reply_id}/upvote", status_code=status.HTTP_200_OK)
 async def toggle_upvote_reply(
     reply_id: str,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> dict:
     """Toggle upvote on a reply."""
     try:

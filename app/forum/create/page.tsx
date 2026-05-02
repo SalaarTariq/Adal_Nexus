@@ -25,7 +25,7 @@ export default function CreateForumThreadPage() {
   const { user, loading: authLoading } = useAuth();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [category, setCategory] = useState('Legal Awareness');
+  const [category, setCategory] = useState('');
   const [tags, setTags] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -40,8 +40,8 @@ export default function CreateForumThreadPage() {
     e.preventDefault();
     setError('');
 
-    if (!title.trim() || !description.trim()) {
-      setError('Title and description are required');
+    if (!title.trim() || !description.trim() || !category.trim()) {
+      setError('Title, description, and category are required');
       return;
     }
 
@@ -127,6 +127,9 @@ export default function CreateForumThreadPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 disabled={submitting}
               >
+                <option value="" disabled>
+                  Select a category
+                </option>
                 {CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}

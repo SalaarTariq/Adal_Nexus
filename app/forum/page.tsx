@@ -212,7 +212,7 @@ export default function ForumPage() {
 
                 <Button
                   className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700"
-                  onClick={() => router.push(`/forum/${selectedThread.threadId}`)}
+                  onClick={() => router.push(`/forum/thread/${selectedThread.threadId}`)}
                 >
                   View Full Discussion
                 </Button>
