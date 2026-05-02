@@ -47,7 +47,7 @@ export default function CreatePostPage() {
       console.log('[Create Post] Starting Firestore write for user:', user.uid);
       const startTime = Date.now();
 
-      const result = await createPost(user.uid, title, content, tagArray);
+      const result = await createPost(user, title, content, tagArray);
       const duration = Date.now() - startTime;
 
       console.log(`[Create Post] Firestore write completed in ${duration}ms`, result);
@@ -56,8 +56,7 @@ export default function CreatePostPage() {
         console.log('[Create Post] Success, redirecting to dashboard...');
         router.push('/dashboard');
       } else {
-        console.log('[Create Post] Failed:', result.error);
-        setError('Failed to create post');
+        setError(result.error || 'Failed to create post');
       }
     } catch (err) {
       console.error('[Create Post] Error:', err);

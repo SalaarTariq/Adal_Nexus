@@ -20,6 +20,7 @@ export default function PostDetailPage() {
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState('');
+  const [isLiked, setIsLiked] = useState(false);
 
   useEffect(() => {
     async function loadPost() {
@@ -44,11 +45,36 @@ export default function PostDetailPage() {
   }, [params.id]);
 
   const handleLike = async () => {
-    if (!user || !params.id) return;
+    if (!user || !params.id || toggling) return;
+    
+    // Track the previous state for rollback in case of error
+    const previousLikes = likes;
+    const previousIsLiked = isLiked;
+    
     try {
       setToggling(true);
-      const result = await likePost(params.id, user.uid);
-      setLikes((current) => (result.liked ? current + 1 : Math.max(0, current - 1)));
+      
+      // Determine new state (toggle)
+      const willBeLiked = !isLiked;
+      
+      // Optimistic update: immediately reflect the change
+      setIsLiked(willBeLiked);
+      setLikes((current) => (willBeLiked ? current + 1 : Math.max(0, current - 1)));
+      
+      const result = await likePost(params.id, user);
+      
+      if (!result.success) {
+        // If API call failed, revert to previous state
+        setLikes(previousLikes);
+        setIsLiked(previousIsLiked);
+        setError('Failed to update like');
+      }
+    } catch (error) {
+      // On error, revert to previous state
+      setLikes(previousLikes);
+      setIsLiked(previousIsLiked);
+      console.error('Error toggling like:', error);
+      setError('Error updating like');
     } finally {
       setToggling(false);
     }
@@ -112,9 +138,13 @@ export default function PostDetailPage() {
 
           <div className="flex items-center justify-between pt-4 border-t border-gray-200">
             <span className="text-sm text-gray-600">{likes} likes</span>
-            <Button onClick={handleLike} disabled={!user || toggling} className="flex items-center gap-2">
-              <Heart className="h-4 w-4" />
-              {toggling ? 'Updating...' : 'Like / Unlike'}
+            <Button 
+              onClick={handleLike} 
+              disabled={!user || toggling} 
+              className={`flex items-center gap-2 ${isLiked ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-gray-100 hover:bg-gray-200'}`}
+            >
+              <Heart className={`h-4 w-4 ${isLiked ? 'fill-white' : ''}`} />
+              {toggling ? 'Updating...' : (isLiked ? 'Unlike' : 'Like')}
             </Button>
           </div>
         </Card>

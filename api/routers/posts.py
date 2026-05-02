@@ -9,7 +9,7 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import firestore
 
-from api.main import verify_firebase_token, get_db
+from api.main import get_current_user_id, get_db
 
 router = APIRouter(prefix="/api", tags=["posts"])
 db = get_db()
@@ -43,7 +43,7 @@ class PostResponse(BaseModel):
 @router.post("/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
 async def create_post(
     payload: PostCreate,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> PostResponse:
     """Create a new post."""
     try:
@@ -53,6 +53,7 @@ async def create_post(
             "content": payload.content,
             "tags": payload.tags or [],
             "authorId": current_user_id,
+            "likeCount": 0,
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow(),
         }
@@ -65,7 +66,6 @@ async def create_post(
 
         return PostResponse(
             postId=post_id,
-            likeCount=0,
             **post_data,
         )
     except Exception as e:
@@ -92,9 +92,9 @@ async def get_post(post_id: str) -> PostResponse:
         like_count = sum(1 for _ in likes_query.stream())
 
         post_data = doc.to_dict()
+        post_data['likeCount'] = like_count
         return PostResponse(
             postId=post_id,
-            likeCount=like_count,
             **post_data,
         )
     except HTTPException:
@@ -110,29 +110,23 @@ async def get_post(post_id: str) -> PostResponse:
 async def list_posts(skip: int = 0, limit: int = 20) -> List[PostResponse]:
     """List all posts with pagination."""
     try:
+        db = get_db()
+        # Order by createdAt DESC and apply limit/offset
+        query = db.collection("posts").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit).offset(skip)
+        
+        docs = query.get()
         posts = []
-        query = (
-            db.collection("posts")
-            .order_by("createdAt", direction=firestore.Query.DESCENDING)
-            .offset(skip)
-            .limit(limit)
-        )
-
-        for doc in query.stream():
-            # Count likes for each post
-            post_id = doc.id
-            likes_query = db.collection("post_likes").where("postId", "==", post_id)
-            like_count = sum(1 for _ in likes_query.stream())
-
+        for doc in docs:
             post_data = doc.to_dict()
+            # Use stored likeCount with fallback to 0
+            post_data['likeCount'] = post_data.get('likeCount', 0)
+            
             posts.append(
                 PostResponse(
-                    postId=post_id,
-                    likeCount=like_count,
+                    postId=doc.id,
                     **post_data,
                 )
             )
-
         return posts
     except Exception as e:
         raise HTTPException(
@@ -145,7 +139,7 @@ async def list_posts(skip: int = 0, limit: int = 20) -> List[PostResponse]:
 async def update_post(
     post_id: str,
     payload: PostUpdate,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> PostResponse:
     """Update a post (only by author)."""
     try:
@@ -178,13 +172,11 @@ async def update_post(
 
         # Fetch updated post
         updated_doc = db.collection("posts").document(post_id).get()
-        likes_query = db.collection("post_likes").where("postId", "==", post_id)
-        like_count = sum(1 for _ in likes_query.stream())
 
         updated_data = updated_doc.to_dict()
+        updated_data['likeCount'] = updated_data.get('likeCount', 0)
         return PostResponse(
             postId=post_id,
-            likeCount=like_count,
             **updated_data,
         )
     except HTTPException:
@@ -203,16 +195,14 @@ async def update_post(
 )
 async def delete_post(
     post_id: str,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> None:
     """Delete a post (only by author)."""
     try:
         doc = db.collection("posts").document(post_id).get()
         if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Post not found",
-            )
+            # Idempotent delete: if it's already gone, return success
+            return Response(status_code=status.HTTP_200_OK)
 
         post_data = doc.to_dict()
         if post_data.get("authorId") != current_user_id:
@@ -243,7 +233,7 @@ async def delete_post(
 @router.post("/posts/{post_id}/like", status_code=status.HTTP_200_OK)
 async def toggle_like_post(
     post_id: str,
-    current_user_id: str = Depends(verify_firebase_token),
+    current_user_id: str = Depends(get_current_user_id),
 ) -> dict:
     """Toggle like on a post."""
     try:
@@ -256,26 +246,38 @@ async def toggle_like_post(
             )
 
         # Check if already liked
-        existing = (
+        existing_likes = (
             db.collection("post_likes")
             .where("postId", "==", post_id)
             .where("userId", "==", current_user_id)
             .get()
         )
 
-        if existing:
-            # Unlike
-            for doc in existing:
+        if existing_likes:
+            # Unlike: delete the like doc and decrement counter
+            for doc in existing_likes:
                 doc.reference.delete()
-            return {"liked": False, "message": "Post unliked"}
+            
+            db.collection("posts").document(post_id).update({
+                "likeCount": firestore.Increment(-1)
+            })
+            liked = False
+            message = "Post unliked"
         else:
-            # Like
+            # Like: create the like doc and increment counter
             db.collection("post_likes").add({
                 "postId": post_id,
                 "userId": current_user_id,
                 "createdAt": datetime.utcnow(),
             })
-            return {"liked": True, "message": "Post liked"}
+            
+            db.collection("posts").document(post_id).update({
+                "likeCount": firestore.Increment(1)
+            })
+            liked = True
+            message = "Post liked"
+
+        return {"liked": liked, "message": message}
 
     except HTTPException:
         raise

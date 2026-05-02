@@ -3,10 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/app/providers';
-import { getPosts, getForumThreads, Post, ForumThread } from '@/lib/firestore';
+import { getPosts, getForumThreads, deletePost, Post, ForumThread } from '@/lib/firestore';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Loader2, LogOut, Plus } from 'lucide-react';
+import { Loader2, LogOut, Plus, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 
 export default function DashboardPage() {
@@ -14,7 +14,8 @@ export default function DashboardPage() {
   const { user, profile, logout, loading: authLoading } = useAuth();
   const [posts, setPosts] = useState<Post[]>([]);
   const [threads, setThreads] = useState<ForumThread[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [threadsLoading, setThreadsLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -24,26 +25,37 @@ export default function DashboardPage() {
   }, [user, authLoading, router]);
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        setLoading(true);
-        const [postsData, threadsData] = await Promise.all([
-          getPosts(10, 0),
-          getForumThreads(undefined, undefined, 5),
-        ]);
-        setPosts(postsData);
-        setThreads(threadsData);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Error loading data');
-      } finally {
-        setLoading(false);
-      }
-    }
-
     if (user && !authLoading) {
-      loadData();
+      // Load posts first (more important for initial view)
+      loadPosts();
+      // Load threads separately (can load in background)
+      loadThreads();
     }
   }, [user, authLoading]);
+
+  async function loadPosts() {
+    try {
+      setPostsLoading(true);
+      const postsData = await getPosts(10, 0);
+      setPosts(postsData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error loading posts');
+    } finally {
+      setPostsLoading(false);
+    }
+  }
+
+  async function loadThreads() {
+    try {
+      setThreadsLoading(true);
+      const threadsData = await getForumThreads(undefined, 0, 5);
+      setThreads(threadsData);
+    } catch (err) {
+      console.error('Error loading threads:', err);
+    } finally {
+      setThreadsLoading(false);
+    }
+  }
 
   const handleLogout = async () => {
     try {
@@ -51,6 +63,25 @@ export default function DashboardPage() {
       router.push('/');
     } catch (err) {
       console.error('Logout failed:', err);
+    }
+  };
+
+  const handleDeletePost = async (e: React.MouseEvent, postId: string) => {
+    e.stopPropagation(); // Prevent card click
+    if (!user) return;
+    
+    if (confirm('Are you sure you want to delete this post? This action cannot be undone.')) {
+      try {
+        const result = await deletePost(postId, user);
+        if (result.success) {
+          // Remove from local state
+          setPosts(current => current.filter(p => p.postId !== postId));
+        } else {
+          setError(result.error || 'Failed to delete post');
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Error deleting post');
+      }
     }
   };
 
@@ -82,12 +113,19 @@ export default function DashboardPage() {
               <Link href="/chat" className="text-gray-600 hover:text-indigo-600">
                 Lex (AI)
               </Link>
+              {user && (
+                <Link href={`/profile/${user.uid}`} className="text-gray-600 hover:text-indigo-600">
+                  My Portfolio
+                </Link>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right hidden sm:block">
-              <p className="text-sm font-medium text-gray-900">{profile?.name}</p>
-              <p className="text-xs text-gray-500 capitalize">{profile?.userType}</p>
+              <Link href={user ? `/profile/${user.uid}` : '#'} className="hover:opacity-80 transition">
+                <p className="text-sm font-medium text-gray-900">{profile?.name}</p>
+                <p className="text-xs text-gray-500 capitalize">{profile?.userType}</p>
+              </Link>
             </div>
             <Button
               variant="outline"
@@ -135,14 +173,32 @@ export default function DashboardPage() {
             {/* Posts Section */}
             <div className="space-y-4">
               <h3 className="text-xl font-semibold text-gray-900 mb-4">Recent Posts</h3>
-              {loading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="animate-spin h-6 w-6 text-indigo-600" />
+              {postsLoading ? (
+                <div className="space-y-3">
+                  {[...Array(3)].map((_, i) => (
+                    <Card key={i} className="p-5 animate-pulse">
+                      <div className="h-5 bg-gray-200 rounded w-3/4 mb-3"></div>
+                      <div className="h-4 bg-gray-200 rounded w-full mb-2"></div>
+                      <div className="h-4 bg-gray-200 rounded w-5/6 mb-3"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+                    </Card>
+                  ))}
                 </div>
               ) : posts.length > 0 ? (
                 posts.map((post) => (
-                  <Card key={post.postId} className="p-5 hover:shadow-lg transition cursor-pointer">
-                    <h4 className="font-semibold text-gray-900 mb-2">{post.title}</h4>
+                  <Card key={post.postId} className="p-5 hover:shadow-lg transition cursor-pointer relative group">
+                    <div className="flex justify-between items-start mb-2">
+                      <h4 className="font-semibold text-gray-900 pr-8">{post.title}</h4>
+                      {user && user.uid === post.authorId && (
+                        <button
+                          onClick={(e) => handleDeletePost(e, post.postId)}
+                          className="text-gray-400 hover:text-red-600 transition p-1 rounded hover:bg-red-50 absolute top-4 right-4 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          title="Delete Post"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
                     <p className="text-gray-600 text-sm line-clamp-2 mb-3">{post.content}</p>
                     <div className="flex items-center justify-between text-xs text-gray-500">
                       <span>{post.authorId}</span>
@@ -163,7 +219,16 @@ export default function DashboardPage() {
             <div className="bg-white rounded-lg border border-gray-200 p-6 sticky top-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Forum Discussions</h3>
               <div className="space-y-3 mb-4">
-                {threads.length > 0 ? (
+                {threadsLoading ? (
+                  <div className="space-y-2">
+                    {[...Array(3)].map((_, i) => (
+                      <div key={i} className="p-3 bg-gray-50 rounded animate-pulse">
+                        <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                        <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+                      </div>
+                    ))}
+                  </div>
+                ) : threads.length > 0 ? (
                   threads.map((thread) => (
                     <div
                       key={thread.threadId}
