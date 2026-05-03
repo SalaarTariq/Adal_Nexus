@@ -9,10 +9,9 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import firestore
 
-from api.main import get_current_user_id, get_db
+from api.core import get_current_user_id, get_db
 
 router = APIRouter(prefix="/api", tags=["posts"])
-db = get_db()
 
 
 class PostCreate(BaseModel):
@@ -57,7 +56,7 @@ async def create_post(
             "updatedAt": datetime.utcnow(),
         }
 
-        doc_ref = db.collection("posts").add(post_data)
+        doc_ref = get_db().collection("posts").add(post_data)
         post_id = doc_ref[1].id
 
         return PostResponse(
@@ -75,7 +74,7 @@ async def create_post(
 async def get_post(post_id: str) -> PostResponse:
     """Get a single post by ID."""
     try:
-        doc = db.collection("posts").document(post_id).get()
+        doc = get_db().collection("posts").document(post_id).get()
         if not doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -105,7 +104,7 @@ async def get_user_post_like(
     """Return whether the authenticated user has liked the post."""
     try:
         existing = (
-            db.collection("post_likes")
+            get_db().collection("post_likes")
             .where("postId", "==", post_id)
             .where("userId", "==", current_user_id)
             .limit(1)
@@ -156,7 +155,7 @@ async def update_post(
 ) -> PostResponse:
     """Update a post (only by author)."""
     try:
-        doc = db.collection("posts").document(post_id).get()
+        doc = get_db().collection("posts").document(post_id).get()
         if not doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -181,10 +180,10 @@ async def update_post(
 
         update_data["updatedAt"] = datetime.utcnow()
 
-        db.collection("posts").document(post_id).update(update_data)
+        get_db().collection("posts").document(post_id).update(update_data)
 
         # Fetch updated post
-        updated_doc = db.collection("posts").document(post_id).get()
+        updated_doc = get_db().collection("posts").document(post_id).get()
 
         updated_data = updated_doc.to_dict()
         updated_data['likeCount'] = updated_data.get('likeCount', 0)
@@ -212,7 +211,7 @@ async def delete_post(
 ) -> None:
     """Delete a post (only by author)."""
     try:
-        doc = db.collection("posts").document(post_id).get()
+        doc = get_db().collection("posts").document(post_id).get()
         if not doc.exists:
             # Idempotent delete: if it's already gone, return success
             return Response(status_code=status.HTTP_200_OK)
@@ -225,10 +224,10 @@ async def delete_post(
             )
 
         # Delete post and associated likes
-        db.collection("posts").document(post_id).delete()
+        get_db().collection("posts").document(post_id).delete()
         
         # Delete likes
-        likes_query = db.collection("post_likes").where("postId", "==", post_id)
+        likes_query = get_db().collection("post_likes").where("postId", "==", post_id)
         for like_doc in likes_query.stream():
             like_doc.reference.delete()
 
@@ -251,7 +250,7 @@ async def toggle_like_post(
     """Toggle like on a post."""
     try:
         # Check if post exists
-        post_doc = db.collection("posts").document(post_id).get()
+        post_doc = get_db().collection("posts").document(post_id).get()
         if not post_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -260,7 +259,7 @@ async def toggle_like_post(
 
         # Check if already liked
         existing_likes = (
-            db.collection("post_likes")
+            get_db().collection("post_likes")
             .where("postId", "==", post_id)
             .where("userId", "==", current_user_id)
             .get()
@@ -278,13 +277,13 @@ async def toggle_like_post(
             message = "Post unliked"
         else:
             # Like: create the like doc and increment counter
-            db.collection("post_likes").add({
+            get_db().collection("post_likes").add({
                 "postId": post_id,
                 "userId": current_user_id,
                 "createdAt": datetime.utcnow(),
             })
             
-            db.collection("posts").document(post_id).update({
+            get_db().collection("posts").document(post_id).update({
                 "likeCount": firestore.Increment(1)
             })
             liked = True

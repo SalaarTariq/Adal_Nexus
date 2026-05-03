@@ -19,6 +19,7 @@ Stack:
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 import time
@@ -32,111 +33,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 
+# Add the project root to sys.path to allow absolute imports like 'from api.routers ...'
+# when running as a serverless function on Vercel.
+project_root = str(Path(__file__).resolve().parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-# Global cache for Firebase app and Firestore client
-_firebase_app = None
-_firestore_client = None
-
-def init_firebase():
-    """Initialize Firebase Admin SDK and return the app instance."""
-    global _firebase_app
-    if _firebase_app:
-        return _firebase_app
-    
-    # Check if running on Vercel (use env vars) or locally (use service account file)
-    if os.getenv("FIREBASE_PRIVATE_KEY"):
-        # Vercel environment – credentials from env vars
-        cred_dict = {
-            "type": "service_account",
-            "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-            "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID", ""),
-            "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),
-            "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-            "client_id": os.getenv("FIREBASE_CLIENT_ID", ""),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        }
-        cred = credentials.Certificate(cred_dict)
-    else:
-        # Local development – using service account JSON file
-        cred = credentials.Certificate("./firebase-key.json")
-    
-    _firebase_app = firebase_admin.initialize_app(cred)
-    return _firebase_app
-
-def get_db():
-    """Get a cached Firestore client."""
-    global _firestore_client
-    if _firestore_client is None:
-        init_firebase()
-        _firestore_client = firestore.client()
-    return _firestore_client
-
-def _is_test_mode_allowed() -> bool:
-    """
-    Check whether test mode is allowed.
-    Test mode is ONLY allowed when ENABLE_TEST_MODE=true is set AND
-    the environment is NOT production.
-    """
-    enable_test = os.getenv("ENABLE_TEST_MODE", "false").lower() == "true"
-    is_production = os.getenv("VERCEL_ENV", "").lower() == "production" or \
-                    os.getenv("NODE_ENV", "").lower() == "production"
-    return enable_test and not is_production
-
-
-async def verify_firebase_token(
-    request: Request,
-    authorization: str | None = Header(None),
-):
-    """
-    Verify Firebase ID token from Authorization header.
-    Returns decoded token dict with uid, email, etc.
-
-    DEV-ONLY: If the request includes the header `X-Test-Mode: true` and
-    the env var ENABLE_TEST_MODE=true is set (and we are NOT in production),
-    token verification is skipped and a hard-coded test user is returned.
-    """
-    # --- Test mode bypass (development only) ---
-    test_mode = request.headers.get("x-test-mode", "").lower() == "true"
-    
-    if test_mode:
-        if not _is_test_mode_allowed():
-            raise HTTPException(
-                status_code=403,
-                detail="Test mode is not allowed in this environment",
-            )
-        return {
-            "uid": "test_user_123",
-            "email": "test@adalcommunity.pk",
-            "name": "Test User",
-        }
-
-    # --- Normal Firebase token verification ---
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    
-    token_str = authorization.split(" ", 1)[1]
-    try:
-        decoded = auth.verify_id_token(token_str)
-        return decoded
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
-
-
-async def get_current_user_id(
-    token: dict = Depends(verify_firebase_token),
-) -> str:
-    """
-    Convenience dependency that extracts just the uid string
-    from the verified token dict. Use this in routers that
-    need the user ID as a plain string.
-    """
-    uid = token.get("uid")
-    if not uid:
-        raise HTTPException(status_code=401, detail="UID not found in token")
-    return uid
+from api.core import init_firebase, get_db, verify_firebase_token, get_current_user_id
 
 
 @asynccontextmanager

@@ -9,10 +9,9 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import firestore
 
-from api.main import get_current_user_id, get_db
+from api.core import get_current_user_id, get_db
 
 router = APIRouter(prefix="/api", tags=["forum"])
-db = get_db()
 
 VALID_CATEGORIES = [
     "Constitutional",
@@ -112,7 +111,7 @@ async def create_thread(
             "updatedAt": datetime.utcnow(),
         }
 
-        doc_ref = db.collection("forumThreads").add(thread_data)
+        doc_ref = get_db().collection("forumThreads").add(thread_data)
         thread_id = doc_ref[1].id
 
         return ThreadResponse(
@@ -132,7 +131,7 @@ async def create_thread(
 async def get_thread(thread_id: str) -> ThreadResponse:
     """Get a single forum thread."""
     try:
-        doc = db.collection("forumThreads").document(thread_id).get()
+        doc = get_db().collection("forumThreads").document(thread_id).get()
         if not doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -162,7 +161,7 @@ async def list_threads(
     """List all forum threads with optional category filter."""
     try:
         db = get_db()
-        query = db.collection("forumThreads").order_by(
+        query = get_db().collection("forumThreads").order_by(
             "createdAt", direction=firestore.Query.DESCENDING
         )
 
@@ -226,7 +225,7 @@ async def update_thread(
 ) -> ThreadResponse:
     """Update a forum thread (only by author)."""
     try:
-        doc = db.collection("forumThreads").document(thread_id).get()
+        doc = get_db().collection("forumThreads").document(thread_id).get()
         if not doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -257,9 +256,9 @@ async def update_thread(
 
         update_data["updatedAt"] = datetime.utcnow()
 
-        db.collection("forumThreads").document(thread_id).update(update_data)
+        get_db().collection("forumThreads").document(thread_id).update(update_data)
 
-        updated_doc = db.collection("forumThreads").document(thread_id).get()
+        updated_doc = get_db().collection("forumThreads").document(thread_id).get()
         updated_data = updated_doc.to_dict()
         return ThreadResponse(
             threadId=thread_id,
@@ -285,7 +284,7 @@ async def delete_thread(
 ) -> None:
     """Delete a forum thread (only by author)."""
     try:
-        doc = db.collection("forumThreads").document(thread_id).get()
+        doc = get_db().collection("forumThreads").document(thread_id).get()
         if not doc.exists:
             # Idempotent delete
             return Response(status_code=status.HTTP_200_OK)
@@ -298,18 +297,18 @@ async def delete_thread(
             )
 
         # Delete thread
-        db.collection("forumThreads").document(thread_id).delete()
+        get_db().collection("forumThreads").document(thread_id).delete()
 
         # Materialize replies once so we can iterate twice (delete replies, then their upvotes).
         reply_docs = list(
-            db.collection("forumReplies").where("threadId", "==", thread_id).get()
+            get_db().collection("forumReplies").where("threadId", "==", thread_id).get()
         )
         for reply_doc in reply_docs:
             reply_doc.reference.delete()
 
         for reply_doc in reply_docs:
             upvotes = (
-                db.collection("forum_reply_upvotes")
+                get_db().collection("forum_reply_upvotes")
                 .where("replyId", "==", reply_doc.id)
                 .get()
             )
@@ -339,7 +338,7 @@ async def create_reply(
     """Create a reply in a forum thread."""
     try:
         # Check if thread exists
-        thread_doc = db.collection("forumThreads").document(thread_id).get()
+        thread_doc = get_db().collection("forumThreads").document(thread_id).get()
         if not thread_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -355,13 +354,13 @@ async def create_reply(
             "updatedAt": datetime.utcnow(),
         }
 
-        doc_ref = db.collection("forumReplies").add(reply_data)
+        doc_ref = get_db().collection("forumReplies").add(reply_data)
         reply_id = doc_ref[1].id
 
         # Increment thread's reply count
         thread_data = thread_doc.to_dict()
         new_reply_count = thread_data.get("replyCount", 0) + 1
-        db.collection("forumThreads").document(thread_id).update({
+        get_db().collection("forumThreads").document(thread_id).update({
             "replyCount": new_reply_count,
         })
 
@@ -384,14 +383,14 @@ async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[R
     try:
         db = get_db()
         # Check if thread exists
-        thread_doc = db.collection("forumThreads").document(thread_id).get()
+        thread_doc = get_db().collection("forumThreads").document(thread_id).get()
         if not thread_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Thread not found",
             )
         docs = (
-            db.collection("forumReplies")
+            get_db().collection("forumReplies")
             .where("threadId", "==", thread_id)
             .get()
         )
@@ -425,7 +424,7 @@ async def list_my_upvotes_for_thread(
     """Return reply IDs in this thread that the current user has upvoted."""
     try:
         reply_docs = list(
-            db.collection("forumReplies").where("threadId", "==", thread_id).get()
+            get_db().collection("forumReplies").where("threadId", "==", thread_id).get()
         )
         if not reply_docs:
             return {"replyIds": []}
@@ -436,7 +435,7 @@ async def list_my_upvotes_for_thread(
         for chunk_start in range(0, len(reply_ids), 10):
             chunk = reply_ids[chunk_start : chunk_start + 10]
             upvotes = (
-                db.collection("forum_reply_upvotes")
+                get_db().collection("forum_reply_upvotes")
                 .where("userId", "==", current_user_id)
                 .where("replyId", "in", chunk)
                 .get()
@@ -461,7 +460,7 @@ async def toggle_upvote_reply(
     """Toggle upvote on a reply."""
     try:
         # Check if reply exists
-        reply_doc = db.collection("forumReplies").document(reply_id).get()
+        reply_doc = get_db().collection("forumReplies").document(reply_id).get()
         if not reply_doc.exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -470,7 +469,7 @@ async def toggle_upvote_reply(
 
         # Check if already upvoted
         existing = (
-            db.collection("forum_reply_upvotes")
+            get_db().collection("forum_reply_upvotes")
             .where("replyId", "==", reply_id)
             .where("userId", "==", current_user_id)
             .get()
@@ -484,14 +483,14 @@ async def toggle_upvote_reply(
             # Decrement upvote count
             reply_data = reply_doc.to_dict()
             new_count = max(0, reply_data.get("upvoteCount", 0) - 1)
-            db.collection("forumReplies").document(reply_id).update({
+            get_db().collection("forumReplies").document(reply_id).update({
                 "upvoteCount": new_count,
             })
 
             return {"upvoted": False, "message": "Upvote removed"}
         else:
             # Add upvote
-            db.collection("forum_reply_upvotes").add({
+            get_db().collection("forum_reply_upvotes").add({
                 "replyId": reply_id,
                 "userId": current_user_id,
                 "createdAt": datetime.utcnow(),
@@ -500,7 +499,7 @@ async def toggle_upvote_reply(
             # Increment upvote count
             reply_data = reply_doc.to_dict()
             new_count = reply_data.get("upvoteCount", 0) + 1
-            db.collection("forumReplies").document(reply_id).update({
+            get_db().collection("forumReplies").document(reply_id).update({
                 "upvoteCount": new_count,
             })
 

@@ -8,7 +8,7 @@ from typing import Optional, Literal
 import os
 from groq import Groq
 
-from api.main import verify_firebase_token
+from api.core import verify_firebase_token
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
