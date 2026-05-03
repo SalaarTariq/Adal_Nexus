@@ -629,10 +629,12 @@ export default function ProfilePage() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2 text-gray-600">
-                  <Mail className="h-5 w-5" />
-                  <span>{profile.email}</span>
-                </div>
+                {isOwnProfile && profile.email && (
+                  <div className="flex items-center gap-2 text-gray-600">
+                    <Mail className="h-5 w-5" />
+                    <span>{profile.email}</span>
+                  </div>
+                )}
                 {profile.socialLinks && (
                   <div className="flex items-center gap-4 pt-2">
                     {profile.socialLinks.linkedin && (

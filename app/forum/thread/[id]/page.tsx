@@ -7,10 +7,12 @@ import { db } from '@/lib/firebase';
 import {
   addForumReply,
   getForumReplies,
+  getMyReplyUpvotes,
   upvoteReply,
   type ForumReply,
   type ForumThread,
 } from '@/lib/firestore';
+import { fetchUserNames } from '@/lib/users';
 import { useAuth } from '@/app/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -29,6 +31,7 @@ export default function ForumThreadPage() {
   const [error, setError] = useState('');
   const [upvotingIds, setUpvotingIds] = useState<Set<string>>(new Set());
   const [userUpvotes, setUserUpvotes] = useState<Set<string>>(new Set());
+  const [authorNames, setAuthorNames] = useState<Record<string, string>>({});
 
   const loadThread = useCallback(async () => {
     if (!params.id) return;
@@ -39,8 +42,14 @@ export default function ForumThreadPage() {
         setError('Thread not found');
         return;
       }
-      setThread({ threadId: threadSnap.id, ...threadSnap.data() } as ForumThread);
-      setReplies(await getForumReplies(params.id));
+      const threadData = { threadId: threadSnap.id, ...threadSnap.data() } as ForumThread;
+      setThread(threadData);
+      const replyList = await getForumReplies(params.id);
+      setReplies(replyList);
+
+      const uids = [threadData.authorId, ...replyList.map((r) => r.authorId)];
+      const names = await fetchUserNames(uids);
+      setAuthorNames(names);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error loading thread');
     } finally {
@@ -51,6 +60,17 @@ export default function ForumThreadPage() {
   useEffect(() => {
     loadThread();
   }, [loadThread]);
+
+  useEffect(() => {
+    if (!user || !params.id) return;
+    let cancelled = false;
+    getMyReplyUpvotes(params.id, user).then((ids) => {
+      if (!cancelled) setUserUpvotes(new Set(ids));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, params.id]);
 
   const handleReply = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -78,78 +98,57 @@ export default function ForumThreadPage() {
   };
 
   const handleUpvote = async (replyId: string) => {
-    if (!user) return;
-    
-    // Prevent multiple simultaneous upvotes on the same reply
-    if (upvotingIds.has(replyId)) return;
+    if (!user || upvotingIds.has(replyId)) return;
 
-    // Mark this reply as being upvoted
-    setUpvotingIds((prev) => new Set([...prev, replyId]));
+    setUpvotingIds((prev) => {
+      const next = new Set(prev);
+      next.add(replyId);
+      return next;
+    });
 
-    // Check current upvote state
-    const isCurrentlyUpvoted = userUpvotes.has(replyId);
-    
-    // Determine what the new state should be (toggle)
-    const willBeUpvoted = !isCurrentlyUpvoted;
-    
-    // Optimistic update: update the local state immediately
+    const wasUpvoted = userUpvotes.has(replyId);
+    const delta = wasUpvoted ? -1 : 1;
+
+    // Optimistic update
     setReplies((prev) =>
       prev.map((reply) =>
         reply.replyId === replyId
-          ? { 
-              ...reply, 
-              upvoteCount: willBeUpvoted ? reply.upvoteCount + 1 : Math.max(0, reply.upvoteCount - 1)
-            }
+          ? { ...reply, upvoteCount: Math.max(0, reply.upvoteCount + delta) }
           : reply
       )
     );
-    
-    // Update user upvotes tracking
-    if (willBeUpvoted) {
-      setUserUpvotes((prev) => new Set([...prev, replyId]));
-    } else {
-      setUserUpvotes((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(replyId);
-        return newSet;
-      });
-    }
+    setUserUpvotes((prev) => {
+      const next = new Set(prev);
+      if (wasUpvoted) next.delete(replyId);
+      else next.add(replyId);
+      return next;
+    });
 
-    // Call API in background
     try {
-      await upvoteReply(replyId, user);
+      const result = await upvoteReply(replyId, user);
+      if (!result.success) throw new Error(result.error || 'Upvote failed');
     } catch (err) {
       console.error('Failed to upvote reply:', err);
-      // On error, revert BOTH the upvote count and the user upvotes tracking
+      // Revert
       setReplies((prev) =>
         prev.map((reply) =>
           reply.replyId === replyId
-            ? { 
-                ...reply, 
-                upvoteCount: isCurrentlyUpvoted ? reply.upvoteCount + 1 : Math.max(0, reply.upvoteCount - 1)
-              }
+            ? { ...reply, upvoteCount: Math.max(0, reply.upvoteCount - delta) }
             : reply
         )
       );
-      
-      // Revert user upvotes tracking
-      if (isCurrentlyUpvoted) {
-        setUserUpvotes((prev) => new Set([...prev, replyId]));
-      } else {
-        setUserUpvotes((prev) => {
-          const newSet = new Set(prev);
-          newSet.delete(replyId);
-          return newSet;
-        });
-      }
-      
+      setUserUpvotes((prev) => {
+        const next = new Set(prev);
+        if (wasUpvoted) next.add(replyId);
+        else next.delete(replyId);
+        return next;
+      });
       setError('Failed to upvote reply');
     } finally {
-      // Remove from upvoting set
       setUpvotingIds((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(replyId);
-        return newSet;
+        const next = new Set(prev);
+        next.delete(replyId);
+        return next;
       });
     }
   };
@@ -196,7 +195,15 @@ export default function ForumThreadPage() {
                 {thread.category}
               </p>
               <h2 className="text-3xl font-serif font-bold text-gray-900">{thread.title}</h2>
-              <p className="mt-2 text-sm text-gray-500">Started by {thread.authorId}</p>
+              <p className="mt-2 text-sm text-gray-500">
+                Started by{' '}
+                <Link
+                  href={`/profile/${thread.authorId}`}
+                  className="text-indigo-600 hover:underline"
+                >
+                  {authorNames[thread.authorId] || 'Adal Nexus member'}
+                </Link>
+              </p>
             </div>
             <div className="flex items-center gap-2 text-sm text-gray-600">
               <MessageSquare className="h-4 w-4" />
@@ -238,7 +245,12 @@ export default function ForumThreadPage() {
                 <div key={reply.replyId} className="rounded-lg border border-gray-200 bg-white p-4">
                   <div className="flex items-center justify-between gap-4">
                     <div>
-                      <p className="font-medium text-gray-900">{reply.authorId}</p>
+                      <Link
+                        href={`/profile/${reply.authorId}`}
+                        className="font-medium text-gray-900 hover:text-indigo-600 hover:underline"
+                      >
+                        {authorNames[reply.authorId] || 'Adal Nexus member'}
+                      </Link>
                       <p className="text-xs text-gray-500">Reply</p>
                     </div>
                     <Button 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/app/providers';
 import { getForumThreads, getForumReplies, ForumThread, ForumReply } from '@/lib/firestore';
+import { fetchUserNames } from '@/lib/users';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Loader2, MessageCircle, Plus, ArrowLeft } from 'lucide-react';
@@ -29,6 +30,7 @@ export default function ForumPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [authorNames, setAuthorNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -40,8 +42,10 @@ export default function ForumPage() {
     async function loadThreads() {
       try {
         setLoading(true);
-        const data = await getForumThreads(selectedCategory || undefined, undefined, 50);
+        const data = await getForumThreads(selectedCategory || undefined, 0, 50);
         setThreads(data);
+        const names = await fetchUserNames(data.map((t) => t.authorId));
+        setAuthorNames(names);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error loading threads');
       } finally {
@@ -186,7 +190,8 @@ export default function ForumPage() {
                     <span className="font-medium text-gray-900">Replies:</span> {selectedThread.replyCount}
                   </p>
                   <p>
-                    <span className="font-medium text-gray-900">Started by:</span> {selectedThread.authorId}
+                    <span className="font-medium text-gray-900">Started by:</span>{' '}
+                    {authorNames[selectedThread.authorId] || 'Adal Nexus member'}
                   </p>
                 </div>
 
@@ -197,7 +202,9 @@ export default function ForumPage() {
                     {replies.length > 0 ? (
                       replies.slice(-3).map((reply) => (
                         <div key={reply.replyId} className="p-3 bg-gray-50 rounded text-xs">
-                          <p className="font-medium text-gray-900">{reply.authorId}</p>
+                          <p className="font-medium text-gray-900">
+                            {authorNames[reply.authorId] || 'Adal Nexus member'}
+                          </p>
                           <p className="text-gray-600 mt-1 line-clamp-2">{reply.content}</p>
                           <div className="flex justify-between items-center mt-2 text-gray-500">
                             <span>👍 {reply.upvoteCount}</span>

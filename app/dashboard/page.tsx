@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/app/providers';
 import { getPosts, getForumThreads, deletePost, Post, ForumThread } from '@/lib/firestore';
+import { fetchUserNames } from '@/lib/users';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Loader2, LogOut, Plus, Trash2 } from 'lucide-react';
@@ -16,6 +17,7 @@ export default function DashboardPage() {
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [postsLoading, setPostsLoading] = useState(true);
   const [threadsLoading, setThreadsLoading] = useState(true);
+  const [authorNames, setAuthorNames] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -38,6 +40,8 @@ export default function DashboardPage() {
       setPostsLoading(true);
       const postsData = await getPosts(10, 0);
       setPosts(postsData);
+      const names = await fetchUserNames(postsData.map((p) => p.authorId));
+      setAuthorNames((prev) => ({ ...prev, ...names }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error loading posts');
     } finally {
@@ -201,7 +205,13 @@ export default function DashboardPage() {
                     </div>
                     <p className="text-gray-600 text-sm line-clamp-2 mb-3">{post.content}</p>
                     <div className="flex items-center justify-between text-xs text-gray-500">
-                      <span>{post.authorId}</span>
+                      <Link
+                        href={`/profile/${post.authorId}`}
+                        className="hover:text-indigo-600"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {authorNames[post.authorId] || 'Adal Nexus member'}
+                      </Link>
                       <span>{post.tags?.join(', ')}</span>
                     </div>
                   </Card>

@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { likePost, getPostLikes, type Post } from '@/lib/firestore';
+import { likePost, getPostLikes, getUserPostLike, type Post } from '@/lib/firestore';
+import { fetchUserNames } from '@/lib/users';
 import { useAuth } from '@/app/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -21,6 +22,7 @@ export default function PostDetailPage() {
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState('');
   const [isLiked, setIsLiked] = useState(false);
+  const [authorName, setAuthorName] = useState<string>('');
 
   useEffect(() => {
     async function loadPost() {
@@ -32,8 +34,11 @@ export default function PostDetailPage() {
           setError('Post not found');
           return;
         }
-        setPost({ postId: postSnap.id, ...postSnap.data() } as Post);
+        const postData = { postId: postSnap.id, ...postSnap.data() } as Post;
+        setPost(postData);
         setLikes(await getPostLikes(params.id));
+        const names = await fetchUserNames([postData.authorId]);
+        setAuthorName(names[postData.authorId] || '');
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error loading post');
       } finally {
@@ -43,6 +48,17 @@ export default function PostDetailPage() {
 
     loadPost();
   }, [params.id]);
+
+  useEffect(() => {
+    if (!user || !params.id) return;
+    let cancelled = false;
+    getUserPostLike(params.id, user).then((liked) => {
+      if (!cancelled) setIsLiked(liked);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, params.id]);
 
   const handleLike = async () => {
     if (!user || !params.id || toggling) return;
@@ -119,7 +135,15 @@ export default function PostDetailPage() {
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-indigo-600 mb-2">Post</p>
             <h2 className="text-3xl font-serif font-bold text-gray-900">{post.title}</h2>
-            <p className="mt-2 text-sm text-gray-500">By {post.authorId}</p>
+            <p className="mt-2 text-sm text-gray-500">
+              By{' '}
+              <Link
+                href={`/profile/${post.authorId}`}
+                className="text-indigo-600 hover:underline"
+              >
+                {authorName || 'Adal Nexus member'}
+              </Link>
+            </p>
           </div>
 
           <div className="prose max-w-none text-gray-700 whitespace-pre-wrap">

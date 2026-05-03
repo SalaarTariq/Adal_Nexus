@@ -54,7 +54,7 @@ export default function CreateForumThreadPage() {
 
       if (!user) return;
       const result = await createForumThread(
-        user.uid,
+        user,
         title,
         description,
         category,
