@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "vercel-build": "pip install -r api/requirements.txt && next build"
+    "vercel-build": "pip install --break-system-packages -r api/requirements.txt && next build"
   },
   "dependencies": {
     "class-variance-authority": "0.7.0",
