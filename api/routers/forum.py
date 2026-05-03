@@ -300,17 +300,17 @@ async def delete_thread(
         # Delete thread
         db.collection("forumThreads").document(thread_id).delete()
 
-        # Delete all replies
-        replies = db.collection("forumReplies").where("threadId", "==", thread_id).get()
-        for reply_doc in replies:
+        # Materialize replies once so we can iterate twice (delete replies, then their upvotes).
+        reply_docs = list(
+            db.collection("forumReplies").where("threadId", "==", thread_id).get()
+        )
+        for reply_doc in reply_docs:
             reply_doc.reference.delete()
 
-        # Delete all upvotes for replies in this thread
-        for reply_doc in replies:
-            reply_id = reply_doc.id
+        for reply_doc in reply_docs:
             upvotes = (
                 db.collection("forum_reply_upvotes")
-                .where("replyId", "==", reply_id)
+                .where("replyId", "==", reply_doc.id)
                 .get()
             )
             for upvote_doc in upvotes:
@@ -414,6 +414,42 @@ async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[R
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing replies: {str(e)}",
+        )
+
+
+@router.get("/forum/threads/{thread_id}/my-upvotes")
+async def list_my_upvotes_for_thread(
+    thread_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+) -> dict:
+    """Return reply IDs in this thread that the current user has upvoted."""
+    try:
+        reply_docs = list(
+            db.collection("forumReplies").where("threadId", "==", thread_id).get()
+        )
+        if not reply_docs:
+            return {"replyIds": []}
+
+        reply_ids = [doc.id for doc in reply_docs]
+        upvoted: list[str] = []
+        # Firestore "in" queries support up to 10 entries per call; chunk if needed.
+        for chunk_start in range(0, len(reply_ids), 10):
+            chunk = reply_ids[chunk_start : chunk_start + 10]
+            upvotes = (
+                db.collection("forum_reply_upvotes")
+                .where("userId", "==", current_user_id)
+                .where("replyId", "in", chunk)
+                .get()
+            )
+            for upvote_doc in upvotes:
+                data = upvote_doc.to_dict() or {}
+                if data.get("replyId"):
+                    upvoted.append(data["replyId"])
+        return {"replyIds": upvoted}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching upvotes: {str(e)}",
         )
 
 

@@ -47,7 +47,6 @@ async def create_post(
 ) -> PostResponse:
     """Create a new post."""
     try:
-        print(f"[create_post] Starting for user {current_user_id}, title: {payload.title[:50]}")
         post_data = {
             "title": payload.title,
             "content": payload.content,
@@ -58,18 +57,14 @@ async def create_post(
             "updatedAt": datetime.utcnow(),
         }
 
-        print(f"[create_post] Writing to Firestore...")
         doc_ref = db.collection("posts").add(post_data)
-        print(f"[create_post] Firestore write returned: {doc_ref}")
         post_id = doc_ref[1].id
-        print(f"[create_post] Post created with ID: {post_id}")
 
         return PostResponse(
             postId=post_id,
             **post_data,
         )
     except Exception as e:
-        print(f"[create_post] Exception: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating post: {str(e)}",
@@ -87,12 +82,8 @@ async def get_post(post_id: str) -> PostResponse:
                 detail="Post not found",
             )
 
-        # Count likes for this post
-        likes_query = db.collection("post_likes").where("postId", "==", post_id)
-        like_count = sum(1 for _ in likes_query.stream())
-
         post_data = doc.to_dict()
-        post_data['likeCount'] = like_count
+        post_data['likeCount'] = post_data.get('likeCount', 0)
         return PostResponse(
             postId=post_id,
             **post_data,
@@ -103,6 +94,28 @@ async def get_post(post_id: str) -> PostResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching post: {str(e)}",
+        )
+
+
+@router.get("/posts/{post_id}/liked")
+async def get_user_post_like(
+    post_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+) -> dict:
+    """Return whether the authenticated user has liked the post."""
+    try:
+        existing = (
+            db.collection("post_likes")
+            .where("postId", "==", post_id)
+            .where("userId", "==", current_user_id)
+            .limit(1)
+            .get()
+        )
+        return {"liked": len(list(existing)) > 0}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error checking like state: {str(e)}",
         )
 
 

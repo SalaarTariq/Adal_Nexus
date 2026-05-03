@@ -29,7 +29,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from functools import lru_cache
 from dotenv import load_dotenv
 
 
@@ -67,7 +66,6 @@ def init_firebase():
     _firebase_app = firebase_admin.initialize_app(cred)
     return _firebase_app
 
-@lru_cache()
 def get_db():
     """Get a cached Firestore client."""
     global _firestore_client
