@@ -297,13 +297,28 @@ export async function likePost(postId: string, user: User) {
 
 export async function getPostLikes(postId: string) {
   try {
-    const likesRef = collection(db, 'post_likes');
-    const q = query(likesRef, where('postId', '==', postId));
-    const docs = await getDocs(q);
-    return docs.size;
+    const response = await fetch(`/api/posts/${postId}`);
+    if (!response.ok) return 0;
+    const data = (await response.json()) as { likeCount?: number };
+    return typeof data.likeCount === 'number' ? data.likeCount : 0;
   } catch (error) {
     console.error('Error fetching post likes:', error);
     return 0;
+  }
+}
+
+export async function getUserPostLike(postId: string, user: User): Promise<boolean> {
+  try {
+    const token = await user.getIdToken();
+    const response = await fetch(`/api/posts/${postId}/liked`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return false;
+    const data = (await response.json()) as { liked?: boolean };
+    return Boolean(data.liked);
+  } catch (error) {
+    console.error('Error fetching like state:', error);
+    return false;
   }
 }
 
@@ -323,17 +338,20 @@ export interface ForumThread {
 
 export async function getForumThreads(
   category?: string,
-  pageOffset = 0,
-  pageSize = 20
+  pageOffset: number = 0,
+  pageSize: number = 20
 ) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
+    const safeOffset = Number.isFinite(pageOffset) ? pageOffset : 0;
+    const safeLimit = Number.isFinite(pageSize) ? pageSize : 20;
+
     const url = new URL('/api/forum/threads', window.location.origin);
     if (category) url.searchParams.append('category', category);
-    url.searchParams.append('skip', pageOffset.toString());
-    url.searchParams.append('limit', pageSize.toString());
+    url.searchParams.append('skip', String(safeOffset));
+    url.searchParams.append('limit', String(safeLimit));
 
     const response = await fetch(url.toString(), {
       signal: controller.signal,
@@ -356,25 +374,14 @@ export async function getForumThreads(
 }
 
 export async function createForumThread(
-  user: User | string | null,
+  user: User,
   title: string,
   description: string,
   category: string,
   tags: string[] = []
 ) {
   try {
-    // Handle case where user might actually be the current user from auth
-    let currentUser: User | null = typeof user === 'string' ? null : user;
-    if (!currentUser) {
-      // If user is a string (uid) or null, get current user
-      currentUser = auth.currentUser;
-    }
-
-    if (!currentUser) {
-      throw new Error('User not authenticated');
-    }
-
-    const token = await currentUser.getIdToken();
+    const token = await user.getIdToken();
     const response = await fetch('/api/forum/threads', {
       method: 'POST',
       headers: {
@@ -420,42 +427,17 @@ export async function getForumReplies(threadId: string) {
     return replies as ForumReply[];
   } catch (error) {
     console.error('Error fetching forum replies via API:', error);
-    try {
-      const repliesRef = collection(db, 'forumReplies');
-      const q = query(repliesRef, where('threadId', '==', threadId));
-      const docs = await getDocs(q);
-      const replies = docs.docs.map((docSnap) => ({
-        replyId: docSnap.id,
-        ...(docSnap.data() as Omit<ForumReply, 'replyId'>),
-      }));
-      return replies.sort((a, b) => {
-        const aValue = a.createdAt instanceof Timestamp ? a.createdAt.toMillis() : Date.parse(String(a.createdAt));
-        const bValue = b.createdAt instanceof Timestamp ? b.createdAt.toMillis() : Date.parse(String(b.createdAt));
-        return aValue - bValue;
-      });
-    } catch (fallbackError) {
-      console.error('Error fetching forum replies via Firestore:', fallbackError);
-      return [];
-    }
+    return [];
   }
 }
 
 export async function addForumReply(
   threadId: string,
-  user: User | string | null,
+  user: User,
   content: string
 ) {
   try {
-    let currentUser: User | null = typeof user === 'string' ? null : user;
-    if (!currentUser) {
-      currentUser = auth.currentUser;
-    }
-
-    if (!currentUser) {
-      throw new Error('User not authenticated');
-    }
-
-    const token = await currentUser.getIdToken();
+    const token = await user.getIdToken();
     const response = await fetch(`/api/forum/threads/${threadId}/replies`, {
       method: 'POST',
       headers: {
@@ -484,18 +466,9 @@ export async function addForumReply(
   }
 }
 
-export async function upvoteReply(replyId: string, user: User | string | null) {
+export async function upvoteReply(replyId: string, user: User) {
   try {
-    let currentUser: User | null = typeof user === 'string' ? null : user;
-    if (!currentUser) {
-      currentUser = auth.currentUser;
-    }
-
-    if (!currentUser) {
-      throw new Error('User not authenticated');
-    }
-
-    const token = await currentUser.getIdToken();
+    const token = await user.getIdToken();
     const response = await fetch(`/api/forum/replies/${replyId}/upvote`, {
       method: 'POST',
       headers: {
@@ -514,6 +487,21 @@ export async function upvoteReply(replyId: string, user: User | string | null) {
   } catch (error) {
     console.error('Error upvoting reply via API:', error);
     return { upvoted: false, success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function getMyReplyUpvotes(threadId: string, user: User): Promise<string[]> {
+  try {
+    const token = await user.getIdToken();
+    const response = await fetch(`/api/forum/threads/${threadId}/my-upvotes`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return [];
+    const data = (await response.json()) as { replyIds?: string[] };
+    return data.replyIds ?? [];
+  } catch (error) {
+    console.error('Error fetching my upvotes:', error);
+    return [];
   }
 }
 
