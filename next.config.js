@@ -3,7 +3,7 @@
 // In local dev, /api/* requests are proxied to the FastAPI server on a dedicated port.
 // On Vercel, /api/*.py files are deployed as serverless functions and the
 // rewrite is a no-op (Vercel's own routing takes precedence via vercel.json).
-const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8002';
+const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000';
 
 const nextConfig = {
   reactStrictMode: true,
