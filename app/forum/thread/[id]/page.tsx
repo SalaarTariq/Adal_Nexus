@@ -16,6 +16,7 @@ import { fetchUserNames } from '@/lib/users';
 import { useAuth } from '@/app/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Markdown } from '@/components/ui/markdown';
 import { ArrowLeft, Loader2, MessageSquare, ThumbsUp } from 'lucide-react';
 import Link from 'next/link';
 
@@ -211,7 +212,7 @@ export default function ForumThreadPage() {
             </div>
           </div>
 
-          <div className="text-gray-700 whitespace-pre-wrap">{thread.description}</div>
+          <Markdown content={thread.description} />
 
           {thread.tags?.length ? (
             <div className="flex flex-wrap gap-2">
@@ -264,7 +265,7 @@ export default function ForumThreadPage() {
                       {reply.upvoteCount}
                     </Button>
                   </div>
-                  <p className="mt-3 whitespace-pre-wrap text-gray-700">{reply.content}</p>
+                  <Markdown content={reply.content} className="mt-3" />
                 </div>
               ))
             ) : (

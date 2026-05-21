@@ -28,12 +28,12 @@ export default function CreatePostPage() {
     e.preventDefault();
     setError('');
 
-    console.log('[Create Post] Submitting...');
-
     if (!title.trim() || !content.trim()) {
       setError('Title and content are required');
       return;
     }
+
+    if (!user) return;
 
     try {
       setSubmitting(true);
@@ -42,24 +42,13 @@ export default function CreatePostPage() {
         .map((tag) => tag.trim())
         .filter((tag) => tag.length > 0);
 
-      if (!user) return;
-
-      console.log('[Create Post] Starting Firestore write for user:', user.uid);
-      const startTime = Date.now();
-
       const result = await createPost(user, title, content, tagArray);
-      const duration = Date.now() - startTime;
-
-      console.log(`[Create Post] Firestore write completed in ${duration}ms`, result);
-
       if (result.success) {
-        console.log('[Create Post] Success, redirecting to dashboard...');
         router.push('/dashboard');
       } else {
         setError(result.error || 'Failed to create post');
       }
     } catch (err) {
-      console.error('[Create Post] Error:', err);
       setError(err instanceof Error ? err.message : 'Error creating post');
     } finally {
       setSubmitting(false);

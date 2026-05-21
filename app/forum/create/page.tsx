@@ -8,17 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
-
-const CATEGORIES = [
-  'Constitutional',
-  'Criminal',
-  'Corporate',
-  'Family',
-  'Cyber',
-  'Tax',
-  'Career Advice',
-  'Legal Awareness',
-];
+import { FORUM_CATEGORIES } from '@/lib/forumCategories';
 
 export default function CreateForumThreadPage() {
   const router = useRouter();
@@ -130,7 +120,7 @@ export default function CreateForumThreadPage() {
                 <option value="" disabled>
                   Select a category
                 </option>
-                {CATEGORIES.map((cat) => (
+                {FORUM_CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}
                   </option>
