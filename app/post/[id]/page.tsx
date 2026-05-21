@@ -9,6 +9,7 @@ import { fetchUserNames } from '@/lib/users';
 import { useAuth } from '@/app/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Markdown } from '@/components/ui/markdown';
 import { ArrowLeft, Loader2, Heart } from 'lucide-react';
 import Link from 'next/link';
 
@@ -146,9 +147,7 @@ export default function PostDetailPage() {
             </p>
           </div>
 
-          <div className="prose max-w-none text-gray-700 whitespace-pre-wrap">
-            {post.content}
-          </div>
+          <Markdown content={post.content} />
 
           {post.tags?.length ? (
             <div className="flex flex-wrap gap-2">
