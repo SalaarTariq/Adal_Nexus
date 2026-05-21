@@ -66,10 +66,15 @@ def get_db():
     return _firestore_client
 
 def _is_test_mode_allowed() -> bool:
+    """Test-mode header bypass is only honoured outside any deployed environment.
+
+    Requires ENABLE_TEST_MODE=true AND no VERCEL_ENV (so it's off on preview
+    and production deployments) AND NODE_ENV is not "production".
+    """
     enable_test = os.getenv("ENABLE_TEST_MODE", "false").lower() == "true"
-    is_production = os.getenv("VERCEL_ENV", "").lower() == "production" or \
-                    os.getenv("NODE_ENV", "").lower() == "production"
-    return enable_test and not is_production
+    vercel_env = os.getenv("VERCEL_ENV", "").lower()  # "production" | "preview" | "development" | ""
+    is_node_prod = os.getenv("NODE_ENV", "").lower() == "production"
+    return enable_test and vercel_env in ("", "development") and not is_node_prod
 
 async def verify_firebase_token(
     request: Request,
