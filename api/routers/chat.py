@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status, Header, Depends
-from pydantic import BaseModel, Field
-from typing import Optional, Literal
+import logging
 import os
+import time
+from collections import defaultdict, deque
+from threading import Lock
+from typing import Deque, Dict, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from groq import Groq
+from pydantic import BaseModel, Field
 
 from api.core import verify_firebase_token
 
 router = APIRouter(prefix="/api", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 # Initialize Groq API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -20,7 +26,7 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # System prompt for Lex - Pakistan-aware legal mentor
-LEX_SYSTEM_PROMPT = """You are Lex, a Pakistan-aware legal mentor and advisor specialized in Pakistani law. 
+LEX_SYSTEM_PROMPT = """You are Lex, a Pakistan-aware legal mentor and advisor specialized in Pakistani law.
 You provide guidance on:
 - Constitution of Pakistan (1973, as amended)
 - Pakistan Penal Code (PPC)
@@ -33,6 +39,34 @@ Always provide accurate, carefully cited legal information. When referencing law
 If you don't know something or it's outside your domain, acknowledge that and suggest consulting qualified legal professionals.
 Be helpful, professional, and maintain the dignity of the Pakistani legal system.
 Respond in clear, understandable language suitable for law students through senior advocates."""
+
+
+# ===== Per-user rate limiting =====
+# Sliding-window limiter: at most CHAT_RATE_LIMIT requests per CHAT_RATE_WINDOW_SECONDS
+# per Firebase UID. Stored in-process; resets on cold-start. Good enough for an MVP
+# and stops a single user from accidentally (or deliberately) burning the Groq budget.
+CHAT_RATE_LIMIT = int(os.getenv("CHAT_RATE_LIMIT", "20"))
+CHAT_RATE_WINDOW_SECONDS = int(os.getenv("CHAT_RATE_WINDOW_SECONDS", "60"))
+
+_rate_buckets: Dict[str, Deque[float]] = defaultdict(deque)
+_rate_lock = Lock()
+
+
+def _check_rate_limit(uid: str) -> None:
+    now = time.monotonic()
+    cutoff = now - CHAT_RATE_WINDOW_SECONDS
+    with _rate_lock:
+        bucket = _rate_buckets[uid]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= CHAT_RATE_LIMIT:
+            retry_in = max(1, int(bucket[0] + CHAT_RATE_WINDOW_SECONDS - now))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit reached. Try again in {retry_in}s.",
+                headers={"Retry-After": str(retry_in)},
+            )
+        bucket.append(now)
 
 
 class ChatHistoryMessage(BaseModel):
@@ -58,53 +92,43 @@ async def chat(
 ) -> ChatResponse:
     """
     Send a message to Lex (AI legal mentor) and get a response.
-    
-    Only authenticated Firebase users can access this endpoint.
-    Responses are generated using Groq API.
-    
-    Args:
-        payload: Chat message with user input
-        current_user: Authenticated Firebase user (from token verification)
+
+    Auth: Firebase ID token (Bearer).
+    Rate-limited per UID.
     """
+    if not groq_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service not configured",
+        )
+
+    uid = current_user.get("uid") or "anonymous"
+    _check_rate_limit(uid)
+
+    messages = [{"role": "system", "content": LEX_SYSTEM_PROMPT}]
+    for item in payload.history[-10:]:
+        messages.append({"role": item.role, "content": item.content})
+    messages.append({"role": "user", "content": payload.message})
+
     try:
-        if not groq_client:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="AI service not configured",
-            )
-
-        messages = [{"role": "system", "content": LEX_SYSTEM_PROMPT}]
-
-        for item in payload.history[-10:]:
-            messages.append({"role": item.role, "content": item.content})
-
-        messages.append({"role": "user", "content": payload.message})
-
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             temperature=0.7,
             max_tokens=4000,
             messages=messages,
         )
-
-        response_text = response.choices[0].message.content if response.choices else None
-
-        if not response_text:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate response from AI",
-            )
-
-        return ChatResponse(
-            reply=response_text,
-            context=payload.context,
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"Chat error: {str(e)}")
+        logger.exception("Groq request failed")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing chat request: {str(e)}",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream AI error: {e}",
         )
+
+    response_text = response.choices[0].message.content if response.choices else None
+    if not response_text:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI returned an empty response",
+        )
+
+    return ChatResponse(reply=response_text, context=payload.context or "Pakistani Law")
