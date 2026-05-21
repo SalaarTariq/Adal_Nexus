@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status, Depends, Response
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import datetime
-import firebase_admin
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from firebase_admin import firestore
+from pydantic import BaseModel, Field
 
 from api.core import get_current_user_id, get_db
 
@@ -39,6 +39,18 @@ class PostResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def _like_doc_id(post_id: str, user_id: str) -> str:
+    """Deterministic like-doc ID so toggles can be done in a transaction."""
+    return f"{user_id}_{post_id}"
+
+
+def _serialize_post(doc) -> PostResponse:
+    data = doc.to_dict() or {}
+    data["likeCount"] = data.get("likeCount", 0)
+    data["tags"] = data.get("tags", []) or []
+    return PostResponse(postId=doc.id, **data)
+
+
 @router.post("/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
 async def create_post(
     payload: PostCreate,
@@ -52,21 +64,17 @@ async def create_post(
             "tags": payload.tags or [],
             "authorId": current_user_id,
             "likeCount": 0,
-            "createdAt": datetime.utcnow(),
-            "updatedAt": datetime.utcnow(),
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
         }
 
-        doc_ref = get_db().collection("posts").add(post_data)
-        post_id = doc_ref[1].id
-
-        return PostResponse(
-            postId=post_id,
-            **post_data,
-        )
+        _, doc_ref = get_db().collection("posts").add(post_data)
+        snapshot = doc_ref.get()
+        return _serialize_post(snapshot)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating post: {str(e)}",
+            detail=f"Error creating post: {e}",
         )
 
 
@@ -76,23 +84,14 @@ async def get_post(post_id: str) -> PostResponse:
     try:
         doc = get_db().collection("posts").document(post_id).get()
         if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Post not found",
-            )
-
-        post_data = doc.to_dict()
-        post_data['likeCount'] = post_data.get('likeCount', 0)
-        return PostResponse(
-            postId=post_id,
-            **post_data,
-        )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+        return _serialize_post(doc)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching post: {str(e)}",
+            detail=f"Error fetching post: {e}",
         )
 
 
@@ -103,47 +102,31 @@ async def get_user_post_like(
 ) -> dict:
     """Return whether the authenticated user has liked the post."""
     try:
-        existing = (
-            get_db().collection("post_likes")
-            .where("postId", "==", post_id)
-            .where("userId", "==", current_user_id)
-            .limit(1)
-            .get()
-        )
-        return {"liked": len(list(existing)) > 0}
+        like_ref = get_db().collection("post_likes").document(_like_doc_id(post_id, current_user_id))
+        return {"liked": like_ref.get().exists}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error checking like state: {str(e)}",
+            detail=f"Error checking like state: {e}",
         )
 
 
 @router.get("/posts", response_model=List[PostResponse])
 async def list_posts(skip: int = 0, limit: int = 20) -> List[PostResponse]:
-    """List all posts with pagination."""
+    """List posts, newest first."""
     try:
-        db = get_db()
-        # Order by createdAt DESC and apply limit/offset
-        query = db.collection("posts").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit).offset(skip)
-        
-        docs = query.get()
-        posts = []
-        for doc in docs:
-            post_data = doc.to_dict()
-            # Use stored likeCount with fallback to 0
-            post_data['likeCount'] = post_data.get('likeCount', 0)
-            
-            posts.append(
-                PostResponse(
-                    postId=doc.id,
-                    **post_data,
-                )
-            )
-        return posts
+        query = (
+            get_db()
+            .collection("posts")
+            .order_by("createdAt", direction=firestore.Query.DESCENDING)
+            .offset(skip)
+            .limit(limit)
+        )
+        return [_serialize_post(doc) for doc in query.get()]
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error listing posts: {str(e)}",
+            detail=f"Error listing posts: {e}",
         )
 
 
@@ -155,48 +138,34 @@ async def update_post(
 ) -> PostResponse:
     """Update a post (only by author)."""
     try:
-        doc = get_db().collection("posts").document(post_id).get()
-        if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Post not found",
-            )
+        post_ref = get_db().collection("posts").document(post_id)
+        snapshot = post_ref.get()
+        if not snapshot.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
-        post_data = doc.to_dict()
-        if post_data.get("authorId") != current_user_id:
+        if (snapshot.to_dict() or {}).get("authorId") != current_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only update your own posts",
             )
 
-        # Prepare update data
-        update_data = {}
+        update_data: dict = {}
         if payload.title is not None:
             update_data["title"] = payload.title
         if payload.content is not None:
             update_data["content"] = payload.content
         if payload.tags is not None:
             update_data["tags"] = payload.tags
+        update_data["updatedAt"] = firestore.SERVER_TIMESTAMP
 
-        update_data["updatedAt"] = datetime.utcnow()
-
-        get_db().collection("posts").document(post_id).update(update_data)
-
-        # Fetch updated post
-        updated_doc = get_db().collection("posts").document(post_id).get()
-
-        updated_data = updated_doc.to_dict()
-        updated_data['likeCount'] = updated_data.get('likeCount', 0)
-        return PostResponse(
-            postId=post_id,
-            **updated_data,
-        )
+        post_ref.update(update_data)
+        return _serialize_post(post_ref.get())
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating post: {str(e)}",
+            detail=f"Error updating post: {e}",
         )
 
 
@@ -208,37 +177,36 @@ async def update_post(
 async def delete_post(
     post_id: str,
     current_user_id: str = Depends(get_current_user_id),
-) -> None:
+) -> Response:
     """Delete a post (only by author)."""
     try:
-        doc = get_db().collection("posts").document(post_id).get()
-        if not doc.exists:
+        db = get_db()
+        post_ref = db.collection("posts").document(post_id)
+        snapshot = post_ref.get()
+        if not snapshot.exists:
             # Idempotent delete: if it's already gone, return success
             return Response(status_code=status.HTTP_200_OK)
 
-        post_data = doc.to_dict()
-        if post_data.get("authorId") != current_user_id:
+        if (snapshot.to_dict() or {}).get("authorId") != current_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only delete your own posts",
             )
 
-        # Delete post and associated likes
-        get_db().collection("posts").document(post_id).delete()
-        
-        # Delete likes
-        likes_query = get_db().collection("post_likes").where("postId", "==", post_id)
+        post_ref.delete()
+
+        # Cascade-delete likes for this post.
+        likes_query = db.collection("post_likes").where("postId", "==", post_id)
         for like_doc in likes_query.stream():
             like_doc.reference.delete()
 
         return Response(status_code=status.HTTP_200_OK)
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error deleting post: {str(e)}",
+            detail=f"Error deleting post: {e}",
         )
 
 
@@ -247,54 +215,41 @@ async def toggle_like_post(
     post_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict:
-    """Toggle like on a post."""
-    try:
-        # Check if post exists
-        post_doc = get_db().collection("posts").document(post_id).get()
-        if not post_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Post not found",
-            )
+    """Toggle like on a post atomically."""
+    db = get_db()
+    post_ref = db.collection("posts").document(post_id)
+    like_ref = db.collection("post_likes").document(_like_doc_id(post_id, current_user_id))
 
-        # Check if already liked
-        existing_likes = (
-            get_db().collection("post_likes")
-            .where("postId", "==", post_id)
-            .where("userId", "==", current_user_id)
-            .get()
-        )
+    @firestore.transactional
+    def _txn(transaction) -> bool:
+        post_snap = post_ref.get(transaction=transaction)
+        if not post_snap.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
-        if existing_likes:
-            # Unlike: delete the like doc and decrement counter
-            for doc in existing_likes:
-                doc.reference.delete()
-            
-            db.collection("posts").document(post_id).update({
-                "likeCount": firestore.Increment(-1)
-            })
-            liked = False
-            message = "Post unliked"
-        else:
-            # Like: create the like doc and increment counter
-            get_db().collection("post_likes").add({
+        like_snap = like_ref.get(transaction=transaction)
+        if like_snap.exists:
+            transaction.delete(like_ref)
+            transaction.update(post_ref, {"likeCount": firestore.Increment(-1)})
+            return False
+
+        transaction.set(
+            like_ref,
+            {
                 "postId": post_id,
                 "userId": current_user_id,
-                "createdAt": datetime.utcnow(),
-            })
-            
-            get_db().collection("posts").document(post_id).update({
-                "likeCount": firestore.Increment(1)
-            })
-            liked = True
-            message = "Post liked"
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            },
+        )
+        transaction.update(post_ref, {"likeCount": firestore.Increment(1)})
+        return True
 
-        return {"liked": liked, "message": message}
-
+    try:
+        liked = _txn(db.transaction())
+        return {"liked": liked, "message": "Post liked" if liked else "Post unliked"}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error toggling like: {str(e)}",
+            detail=f"Error toggling like: {e}",
         )
