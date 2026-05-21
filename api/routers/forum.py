@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status, Depends, Response
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import datetime
-import firebase_admin
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from firebase_admin import firestore
+from pydantic import BaseModel, Field
 
 from api.core import get_current_user_id, get_db
 
@@ -23,6 +23,11 @@ VALID_CATEGORIES = [
     "Career Advice",
     "Legal Awareness",
 ]
+
+
+def _upvote_doc_id(reply_id: str, user_id: str) -> str:
+    """Deterministic upvote-doc ID so toggles can be done in a transaction."""
+    return f"{user_id}_{reply_id}"
 
 
 def _is_constitution_related(thread_data: dict) -> bool:
@@ -84,6 +89,27 @@ class ReplyResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def _serialize_thread(doc) -> ThreadResponse:
+    data = doc.to_dict() or {}
+    data["replyCount"] = data.get("replyCount", 0)
+    data["tags"] = data.get("tags", []) or []
+    return ThreadResponse(threadId=doc.id, **data)
+
+
+def _serialize_reply(doc) -> ReplyResponse:
+    data = doc.to_dict() or {}
+    data["upvoteCount"] = data.get("upvoteCount", 0)
+    return ReplyResponse(replyId=doc.id, **data)
+
+
+def _ensure_valid_category(category: str) -> None:
+    if category not in VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
+        )
+
+
 # ===== THREADS =====
 
 
@@ -94,11 +120,7 @@ async def create_thread(
 ) -> ThreadResponse:
     """Create a new forum thread."""
     try:
-        if payload.category not in VALID_CATEGORIES:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
-            )
+        _ensure_valid_category(payload.category)
 
         thread_data = {
             "title": payload.title,
@@ -107,23 +129,18 @@ async def create_thread(
             "tags": payload.tags or [],
             "authorId": current_user_id,
             "replyCount": 0,
-            "createdAt": datetime.utcnow(),
-            "updatedAt": datetime.utcnow(),
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
         }
 
-        doc_ref = get_db().collection("forumThreads").add(thread_data)
-        thread_id = doc_ref[1].id
-
-        return ThreadResponse(
-            threadId=thread_id,
-            **thread_data,
-        )
+        _, doc_ref = get_db().collection("forumThreads").add(thread_data)
+        return _serialize_thread(doc_ref.get())
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating thread: {str(e)}",
+            detail=f"Error creating thread: {e}",
         )
 
 
@@ -133,22 +150,14 @@ async def get_thread(thread_id: str) -> ThreadResponse:
     try:
         doc = get_db().collection("forumThreads").document(thread_id).get()
         if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Thread not found",
-            )
-
-        thread_data = doc.to_dict()
-        return ThreadResponse(
-            threadId=thread_id,
-            **thread_data,
-        )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+        return _serialize_thread(doc)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching thread: {str(e)}",
+            detail=f"Error fetching thread: {e}",
         )
 
 
@@ -160,60 +169,40 @@ async def list_threads(
 ) -> List[ThreadResponse]:
     """List all forum threads with optional category filter."""
     try:
-        db = get_db()
-        query = get_db().collection("forumThreads").order_by(
-            "createdAt", direction=firestore.Query.DESCENDING
+        query = (
+            get_db()
+            .collection("forumThreads")
+            .order_by("createdAt", direction=firestore.Query.DESCENDING)
         )
 
         if category:
-            if category not in VALID_CATEGORIES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
-                )
+            _ensure_valid_category(category)
 
             if category == "Constitutional":
                 # Compatibility behavior: include older constitution-related threads
                 # that were saved under "Legal Awareness".
                 docs = query.limit(max(limit * 5, 50)).get()
-                filtered_threads = []
-                for doc in docs:
-                    thread_data = doc.to_dict()
-                    if thread_data.get("category") == "Constitutional" or (
-                        thread_data.get("category") == "Legal Awareness"
-                        and _is_constitution_related(thread_data)
-                    ):
-                        filtered_threads.append(
-                            ThreadResponse(
-                                threadId=doc.id,
-                                **thread_data,
-                            )
-                        )
-
-                return filtered_threads[skip : skip + limit]
+                filtered = [
+                    _serialize_thread(doc)
+                    for doc in docs
+                    if (doc.to_dict() or {}).get("category") == "Constitutional"
+                    or (
+                        (doc.to_dict() or {}).get("category") == "Legal Awareness"
+                        and _is_constitution_related(doc.to_dict() or {})
+                    )
+                ]
+                return filtered[skip : skip + limit]
 
             query = query.where("category", "==", category)
 
         query = query.offset(skip).limit(limit)
-
-        docs = query.get()
-        threads = []
-        for doc in docs:
-            thread_data = doc.to_dict()
-            threads.append(
-                ThreadResponse(
-                    threadId=doc.id,
-                    **thread_data,
-                )
-            )
-
-        return threads
+        return [_serialize_thread(doc) for doc in query.get()]
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error listing threads: {str(e)}",
+            detail=f"Error listing threads: {e}",
         )
 
 
@@ -225,51 +214,37 @@ async def update_thread(
 ) -> ThreadResponse:
     """Update a forum thread (only by author)."""
     try:
-        doc = get_db().collection("forumThreads").document(thread_id).get()
-        if not doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Thread not found",
-            )
+        thread_ref = get_db().collection("forumThreads").document(thread_id)
+        snapshot = thread_ref.get()
+        if not snapshot.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
-        thread_data = doc.to_dict()
-        if thread_data.get("authorId") != current_user_id:
+        if (snapshot.to_dict() or {}).get("authorId") != current_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only update your own threads",
             )
 
-        update_data = {}
+        update_data: dict = {}
         if payload.title is not None:
             update_data["title"] = payload.title
         if payload.description is not None:
             update_data["description"] = payload.description
         if payload.category is not None:
-            if payload.category not in VALID_CATEGORIES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
-                )
+            _ensure_valid_category(payload.category)
             update_data["category"] = payload.category
         if payload.tags is not None:
             update_data["tags"] = payload.tags
+        update_data["updatedAt"] = firestore.SERVER_TIMESTAMP
 
-        update_data["updatedAt"] = datetime.utcnow()
-
-        get_db().collection("forumThreads").document(thread_id).update(update_data)
-
-        updated_doc = get_db().collection("forumThreads").document(thread_id).get()
-        updated_data = updated_doc.to_dict()
-        return ThreadResponse(
-            threadId=thread_id,
-            **updated_data,
-        )
+        thread_ref.update(update_data)
+        return _serialize_thread(thread_ref.get())
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating thread: {str(e)}",
+            detail=f"Error updating thread: {e}",
         )
 
 
@@ -281,34 +256,34 @@ async def update_thread(
 async def delete_thread(
     thread_id: str,
     current_user_id: str = Depends(get_current_user_id),
-) -> None:
+) -> Response:
     """Delete a forum thread (only by author)."""
     try:
-        doc = get_db().collection("forumThreads").document(thread_id).get()
-        if not doc.exists:
+        db = get_db()
+        thread_ref = db.collection("forumThreads").document(thread_id)
+        snapshot = thread_ref.get()
+        if not snapshot.exists:
             # Idempotent delete
             return Response(status_code=status.HTTP_200_OK)
 
-        thread_data = doc.to_dict()
-        if thread_data.get("authorId") != current_user_id:
+        if (snapshot.to_dict() or {}).get("authorId") != current_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only delete your own threads",
             )
 
-        # Delete thread
-        get_db().collection("forumThreads").document(thread_id).delete()
+        thread_ref.delete()
 
         # Materialize replies once so we can iterate twice (delete replies, then their upvotes).
         reply_docs = list(
-            get_db().collection("forumReplies").where("threadId", "==", thread_id).get()
+            db.collection("forumReplies").where("threadId", "==", thread_id).get()
         )
         for reply_doc in reply_docs:
             reply_doc.reference.delete()
 
         for reply_doc in reply_docs:
             upvotes = (
-                get_db().collection("forum_reply_upvotes")
+                db.collection("forum_reply_upvotes")
                 .where("replyId", "==", reply_doc.id)
                 .get()
             )
@@ -316,103 +291,85 @@ async def delete_thread(
                 upvote_doc.reference.delete()
 
         return Response(status_code=status.HTTP_200_OK)
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error deleting thread: {str(e)}",
+            detail=f"Error deleting thread: {e}",
         )
 
 
 # ===== REPLIES =====
 
 
-@router.post("/forum/threads/{thread_id}/replies", response_model=ReplyResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/forum/threads/{thread_id}/replies",
+    response_model=ReplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_reply(
     thread_id: str,
     payload: ReplyCreate,
     current_user_id: str = Depends(get_current_user_id),
 ) -> ReplyResponse:
-    """Create a reply in a forum thread."""
+    """Create a reply in a forum thread and atomically bump replyCount."""
     try:
-        # Check if thread exists
-        thread_doc = get_db().collection("forumThreads").document(thread_id).get()
-        if not thread_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Thread not found",
-            )
+        db = get_db()
+        thread_ref = db.collection("forumThreads").document(thread_id)
+        if not thread_ref.get().exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
         reply_data = {
             "threadId": thread_id,
             "content": payload.content,
             "authorId": current_user_id,
             "upvoteCount": 0,
-            "createdAt": datetime.utcnow(),
-            "updatedAt": datetime.utcnow(),
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
         }
 
-        doc_ref = get_db().collection("forumReplies").add(reply_data)
-        reply_id = doc_ref[1].id
+        # Use a batched write so the reply create + parent counter bump
+        # are committed together (atomic-enough for our needs and avoids
+        # the race condition of a manual read-then-update).
+        reply_ref = db.collection("forumReplies").document()
+        batch = db.batch()
+        batch.set(reply_ref, reply_data)
+        batch.update(thread_ref, {"replyCount": firestore.Increment(1)})
+        batch.commit()
 
-        # Increment thread's reply count
-        thread_data = thread_doc.to_dict()
-        new_reply_count = thread_data.get("replyCount", 0) + 1
-        get_db().collection("forumThreads").document(thread_id).update({
-            "replyCount": new_reply_count,
-        })
-
-        return ReplyResponse(
-            replyId=reply_id,
-            **reply_data,
-        )
+        return _serialize_reply(reply_ref.get())
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating reply: {str(e)}",
+            detail=f"Error creating reply: {e}",
         )
 
 
 @router.get("/forum/threads/{thread_id}/replies", response_model=List[ReplyResponse])
 async def list_replies(thread_id: str, skip: int = 0, limit: int = 50) -> List[ReplyResponse]:
-    """List all replies for a thread."""
+    """List replies for a thread, oldest first."""
     try:
         db = get_db()
-        # Check if thread exists
-        thread_doc = get_db().collection("forumThreads").document(thread_id).get()
-        if not thread_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Thread not found",
-            )
-        docs = (
-            get_db().collection("forumReplies")
+        if not db.collection("forumThreads").document(thread_id).get().exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+
+        query = (
+            db.collection("forumReplies")
             .where("threadId", "==", thread_id)
-            .get()
+            .order_by("createdAt", direction=firestore.Query.ASCENDING)
+            .offset(skip)
+            .limit(limit)
         )
-
-        replies = []
-        for doc in docs:
-            reply_data = doc.to_dict()
-            replies.append(
-                ReplyResponse(
-                    replyId=doc.id,
-                    **reply_data,
-                )
-            )
-
-        replies.sort(key=lambda reply: reply.createdAt)
-        return replies[skip : skip + limit]
+        return [_serialize_reply(doc) for doc in query.get()]
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error listing replies: {str(e)}",
+            detail=f"Error listing replies: {e}",
         )
 
 
@@ -423,8 +380,9 @@ async def list_my_upvotes_for_thread(
 ) -> dict:
     """Return reply IDs in this thread that the current user has upvoted."""
     try:
+        db = get_db()
         reply_docs = list(
-            get_db().collection("forumReplies").where("threadId", "==", thread_id).get()
+            db.collection("forumReplies").where("threadId", "==", thread_id).get()
         )
         if not reply_docs:
             return {"replyIds": []}
@@ -435,7 +393,7 @@ async def list_my_upvotes_for_thread(
         for chunk_start in range(0, len(reply_ids), 10):
             chunk = reply_ids[chunk_start : chunk_start + 10]
             upvotes = (
-                get_db().collection("forum_reply_upvotes")
+                db.collection("forum_reply_upvotes")
                 .where("userId", "==", current_user_id)
                 .where("replyId", "in", chunk)
                 .get()
@@ -448,7 +406,7 @@ async def list_my_upvotes_for_thread(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching upvotes: {str(e)}",
+            detail=f"Error fetching upvotes: {e}",
         )
 
 
@@ -457,58 +415,43 @@ async def toggle_upvote_reply(
     reply_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict:
-    """Toggle upvote on a reply."""
-    try:
-        # Check if reply exists
-        reply_doc = get_db().collection("forumReplies").document(reply_id).get()
-        if not reply_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Reply not found",
-            )
+    """Toggle upvote on a reply atomically."""
+    db = get_db()
+    reply_ref = db.collection("forumReplies").document(reply_id)
+    upvote_ref = db.collection("forum_reply_upvotes").document(
+        _upvote_doc_id(reply_id, current_user_id)
+    )
 
-        # Check if already upvoted
-        existing = (
-            get_db().collection("forum_reply_upvotes")
-            .where("replyId", "==", reply_id)
-            .where("userId", "==", current_user_id)
-            .get()
-        )
+    @firestore.transactional
+    def _txn(transaction) -> bool:
+        reply_snap = reply_ref.get(transaction=transaction)
+        if not reply_snap.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reply not found")
 
-        if existing:
-            # Remove upvote
-            for doc in existing:
-                doc.reference.delete()
+        upvote_snap = upvote_ref.get(transaction=transaction)
+        if upvote_snap.exists:
+            transaction.delete(upvote_ref)
+            transaction.update(reply_ref, {"upvoteCount": firestore.Increment(-1)})
+            return False
 
-            # Decrement upvote count
-            reply_data = reply_doc.to_dict()
-            new_count = max(0, reply_data.get("upvoteCount", 0) - 1)
-            get_db().collection("forumReplies").document(reply_id).update({
-                "upvoteCount": new_count,
-            })
-
-            return {"upvoted": False, "message": "Upvote removed"}
-        else:
-            # Add upvote
-            get_db().collection("forum_reply_upvotes").add({
+        transaction.set(
+            upvote_ref,
+            {
                 "replyId": reply_id,
                 "userId": current_user_id,
-                "createdAt": datetime.utcnow(),
-            })
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            },
+        )
+        transaction.update(reply_ref, {"upvoteCount": firestore.Increment(1)})
+        return True
 
-            # Increment upvote count
-            reply_data = reply_doc.to_dict()
-            new_count = reply_data.get("upvoteCount", 0) + 1
-            get_db().collection("forumReplies").document(reply_id).update({
-                "upvoteCount": new_count,
-            })
-
-            return {"upvoted": True, "message": "Upvote added"}
-
+    try:
+        upvoted = _txn(db.transaction())
+        return {"upvoted": upvoted, "message": "Upvote added" if upvoted else "Upvote removed"}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error toggling upvote: {str(e)}",
+            detail=f"Error toggling upvote: {e}",
         )
