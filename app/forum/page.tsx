@@ -9,17 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Loader2, MessageCircle, Plus, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
-
-const CATEGORIES = [
-  'Constitutional',
-  'Criminal',
-  'Corporate',
-  'Family',
-  'Cyber',
-  'Tax',
-  'Career Advice',
-  'Legal Awareness',
-];
+import { FORUM_CATEGORIES } from '@/lib/forumCategories';
 
 export default function ForumPage() {
   const router = useRouter();
@@ -109,7 +99,7 @@ export default function ForumPage() {
             >
               All
             </Button>
-            {CATEGORIES.map((category) => (
+            {FORUM_CATEGORIES.map((category) => (
               <Button
                 key={category}
                 variant={selectedCategory === category ? 'default' : 'outline'}
