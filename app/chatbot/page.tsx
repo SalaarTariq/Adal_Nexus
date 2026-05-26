@@ -280,6 +280,7 @@ export default function ChatbotPage() {
         },
         body: JSON.stringify({
           message: rawUserInput,
+          mode,
           context: 'Pakistani Law',
           history,
         }),
