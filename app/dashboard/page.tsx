@@ -92,7 +92,7 @@ export default function DashboardPage() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin h-8 w-8 text-indigo-600" />
+        <Loader2 className="animate-spin h-8 w-8 text-accent" />
       </div>
     );
   }
@@ -105,20 +105,20 @@ export default function DashboardPage() {
           <div className="flex items-center gap-8">
             <h1 className="text-2xl font-bold font-serif text-gray-900">Adal Nexus</h1>
             <nav className="hidden md:flex gap-6 text-sm">
-              <Link href="/dashboard" className="text-gray-700 hover:text-indigo-600 font-medium">
+              <Link href="/dashboard" className="text-gray-700 hover:text-accent font-medium transition-colors">
                 Dashboard
               </Link>
-              <Link href="/forum" className="text-gray-600 hover:text-indigo-600">
+              <Link href="/forum" className="text-gray-600 hover:text-accent transition-colors">
                 Forum
               </Link>
-              <Link href="/roadmap" className="text-gray-600 hover:text-indigo-600">
+              <Link href="/roadmap" className="text-gray-600 hover:text-accent transition-colors">
                 Roadmap
               </Link>
-              <Link href="/chat" className="text-gray-600 hover:text-indigo-600">
+              <Link href="/chat" className="text-gray-600 hover:text-accent transition-colors">
                 Lex (AI)
               </Link>
               {user && (
-                <Link href={`/profile/${user.uid}`} className="text-gray-600 hover:text-indigo-600">
+                <Link href={`/profile/${user.uid}`} className="text-gray-600 hover:text-accent transition-colors">
                   My Portfolio
                 </Link>
               )}
@@ -166,7 +166,7 @@ export default function DashboardPage() {
             {/* Create Post Button */}
             <div className="mb-6">
               <Button
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700"
+                className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
                 onClick={() => router.push('/create-post')}
               >
                 <Plus className="h-4 w-4" />
@@ -207,7 +207,7 @@ export default function DashboardPage() {
                     <div className="flex items-center justify-between text-xs text-gray-500">
                       <Link
                         href={`/profile/${post.authorId}`}
-                        className="hover:text-indigo-600"
+                        className="hover:text-accent font-medium transition-colors"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {authorNames[post.authorId] || 'Adal Nexus member'}

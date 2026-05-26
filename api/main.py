@@ -315,6 +315,12 @@ try:
 except ImportError as e:
     print(f"Warning: chat router not available: {e}")
 
+try:
+    from api.routers import roadmap as roadmap_router
+    app.include_router(roadmap_router.router)
+except ImportError as e:
+    print(f"Warning: roadmap router not available: {e}")
+
 
 @app.get("/api/version")
 def version():

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from firebase_admin import firestore
 from pydantic import BaseModel, Field
 
-from api.core import get_current_user_id, get_db
+from api.core import get_current_user_id, get_db, adjust_user_reputation
 
 router = APIRouter(prefix="/api", tags=["forum"])
 
@@ -337,7 +337,13 @@ async def create_reply(
         batch.set(reply_ref, reply_data)
         batch.update(thread_ref, {"replyCount": firestore.Increment(1)})
         batch.commit()
-
+        adjust_user_reputation(
+            current_user_id,
+            delta=2,
+            reason="Posted a forum reply",
+            ref_type="REPLY",
+            ref_id=reply_ref.id,
+        )
         return _serialize_reply(reply_ref.get())
     except HTTPException:
         raise
@@ -423,16 +429,19 @@ async def toggle_upvote_reply(
     )
 
     @firestore.transactional
-    def _txn(transaction) -> bool:
+    def _txn(transaction) -> tuple[bool, str | None]:
         reply_snap = reply_ref.get(transaction=transaction)
         if not reply_snap.exists:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reply not found")
+
+        reply_data = reply_snap.to_dict() or {}
+        author_id = reply_data.get("authorId")
 
         upvote_snap = upvote_ref.get(transaction=transaction)
         if upvote_snap.exists:
             transaction.delete(upvote_ref)
             transaction.update(reply_ref, {"upvoteCount": firestore.Increment(-1)})
-            return False
+            return False, author_id
 
         transaction.set(
             upvote_ref,
@@ -443,10 +452,20 @@ async def toggle_upvote_reply(
             },
         )
         transaction.update(reply_ref, {"upvoteCount": firestore.Increment(1)})
-        return True
+        return True, author_id
 
     try:
-        upvoted = _txn(db.transaction())
+        upvoted, author_id = _txn(db.transaction())
+        if author_id:
+            delta = 1 if upvoted else -1
+            reason = "Received a reply upvote" if upvoted else "Lost a reply upvote"
+            adjust_user_reputation(
+                author_id,
+                delta=delta,
+                reason=reason,
+                ref_type="UPVOTE",
+                ref_id=reply_id,
+            )
         return {"upvoted": upvoted, "message": "Upvote added" if upvoted else "Upvote removed"}
     except HTTPException:
         raise

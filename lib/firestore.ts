@@ -550,29 +550,29 @@ export async function updateMilestone(
   completed: boolean
 ) {
   try {
-    const progressRef = doc(db, 'roadmapProgress', userId);
-    const yearKey = `year${year}`;
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('User is not authenticated');
+    }
 
-    const existingDoc = await getDoc(progressRef);
+    const response = await fetch('/api/roadmap/milestone', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ year, milestone, completed }),
+    });
 
-    if (!existingDoc.exists()) {
-      await setDoc(progressRef, {
-        [yearKey]: {
-          [milestone]: completed,
-        },
-        updatedAt: Timestamp.now(),
-      });
-    } else {
-      await updateDoc(progressRef, {
-        [`${yearKey}.${milestone}`]: completed,
-        updatedAt: Timestamp.now(),
-      });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
     }
 
     return { success: true };
   } catch (error) {
-    console.error('Error updating milestone:', error);
-    return { success: false, error };
+    console.error('Error updating milestone via API:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -112,3 +112,53 @@ async def get_current_user_id(
     if not uid:
         raise HTTPException(status_code=401, detail="UID not found in token")
     return uid
+
+
+def adjust_user_reputation(
+    user_id: str,
+    delta: int,
+    reason: str,
+    ref_type: str,
+    ref_id: str,
+) -> int:
+    """Adjusts a user's reputation score inside a Firestore transaction.
+
+    Creates an audit event in the global 'reputation_events' collection.
+    """
+    db = get_db()
+    if not db:
+        return 0
+
+    user_ref = db.collection("users").document(user_id)
+    event_ref = db.collection("reputation_events").document()
+
+    @firestore.transactional
+    def _txn(transaction) -> int:
+        user_snap = user_ref.get(transaction=transaction)
+        if not user_snap.exists:
+            return 0
+        
+        user_data = user_snap.to_dict() or {}
+        current_rep = user_data.get("reputation", 0)
+        new_rep = max(0, current_rep + delta)
+
+        transaction.update(user_ref, {
+            "reputation": new_rep,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        })
+
+        transaction.set(event_ref, {
+            "userId": user_id,
+            "delta": delta,
+            "reason": reason,
+            "refType": ref_type,
+            "refId": ref_id,
+            "createdAt": firestore.SERVER_TIMESTAMP,
+        })
+        return new_rep
+
+    try:
+        return _txn(db.transaction())
+    except Exception as e:
+        print(f"Error in adjust_user_reputation transaction: {e}")
+        return 0

@@ -280,6 +280,7 @@ export default function ChatbotPage() {
         },
         body: JSON.stringify({
           message: rawUserInput,
+          mode,
           context: 'Pakistani Law',
           history,
         }),
@@ -344,7 +345,7 @@ export default function ChatbotPage() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
       </div>
     );
   }
@@ -356,7 +357,7 @@ export default function ChatbotPage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Chat spaces</p>
           <Button
             onClick={startNewChat}
-            className="w-full bg-indigo-600 hover:bg-indigo-700"
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
             disabled={creatingSession}
           >
             <Plus className="h-4 w-4 mr-2" />
@@ -379,7 +380,7 @@ export default function ChatbotPage() {
                 onClick={() => openSession(session)}
                 className={`w-full text-left rounded-lg border px-3 py-2 transition ${
                   activeSessionId === session.sessionId
-                    ? 'border-indigo-300 bg-indigo-50'
+                    ? 'border-accent/40 bg-accent/10 text-primary font-medium'
                     : 'border-gray-200 bg-white hover:bg-gray-50'
                 }`}
               >
@@ -405,7 +406,7 @@ export default function ChatbotPage() {
             <div className="p-4 border-b border-gray-200 flex items-center justify-between gap-3">
               <Button
                 onClick={startNewChat}
-                className="bg-indigo-600 hover:bg-indigo-700"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
                 disabled={creatingSession}
               >
                 <Plus className="h-4 w-4 mr-2" />
@@ -427,7 +428,7 @@ export default function ChatbotPage() {
                   onClick={() => openSession(session)}
                   className={`w-full text-left rounded-lg border px-3 py-2 transition ${
                     activeSessionId === session.sessionId
-                      ? 'border-indigo-300 bg-indigo-50'
+                      ? 'border-accent/40 bg-accent/10 text-primary font-medium'
                       : 'border-gray-200 bg-white hover:bg-gray-50'
                   }`}
                 >
@@ -499,14 +500,14 @@ export default function ChatbotPage() {
               <div
                 className={`max-w-[90%] sm:max-w-2xl rounded-lg px-4 py-3 ${
                   message.role === 'user'
-                    ? 'bg-indigo-600 text-white rounded-br-none'
+                    ? 'bg-primary text-primary-foreground rounded-br-none'
                     : 'bg-white border border-gray-200 text-gray-900 rounded-bl-none'
                 }`}
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                 <p
                   className={`text-[11px] mt-2 ${
-                    message.role === 'user' ? 'text-indigo-100' : 'text-gray-500'
+                    message.role === 'user' ? 'text-accent' : 'text-gray-500'
                   }`}
                 >
                   {message.timestamp.toLocaleTimeString()}
@@ -538,12 +539,12 @@ export default function ChatbotPage() {
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="Ask about Pakistani law..."
               disabled={loadingReply}
-              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100"
+              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary disabled:bg-gray-100"
             />
             <Button
               type="submit"
               disabled={loadingReply || !inputValue.trim()}
-              className="bg-indigo-600 hover:bg-indigo-700"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground transition-colors"
             >
               <Send className="h-4 w-4 mr-1" />
               Send
