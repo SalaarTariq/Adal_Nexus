@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from firebase_admin import firestore
 from pydantic import BaseModel, Field
 
-from api.core import get_current_user_id, get_db
+from api.core import get_current_user_id, get_db, adjust_user_reputation
 
 router = APIRouter(prefix="/api", tags=["posts"])
 
@@ -69,6 +69,13 @@ async def create_post(
         }
 
         _, doc_ref = get_db().collection("posts").add(post_data)
+        adjust_user_reputation(
+            current_user_id,
+            delta=5,
+            reason="Created a new post",
+            ref_type="POST",
+            ref_id=doc_ref.id,
+        )
         snapshot = doc_ref.get()
         return _serialize_post(snapshot)
     except Exception as e:
@@ -194,6 +201,13 @@ async def delete_post(
             )
 
         post_ref.delete()
+        adjust_user_reputation(
+            current_user_id,
+            delta=-5,
+            reason="Deleted a post",
+            ref_type="POST",
+            ref_id=post_id,
+        )
 
         # Cascade-delete likes for this post.
         likes_query = db.collection("post_likes").where("postId", "==", post_id)
