@@ -126,7 +126,7 @@ export default function RoadmapPage() {
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin h-8 w-8 text-indigo-600" />
+        <Loader2 className="animate-spin h-8 w-8 text-accent" />
       </div>
     );
   }
@@ -150,11 +150,11 @@ export default function RoadmapPage() {
         <Card className="p-6 mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Overall Progress</h2>
-            <span className="text-3xl font-bold text-indigo-600">{overallProgress}%</span>
+            <span className="text-3xl font-bold text-accent">{overallProgress}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-3">
             <div
-              className="bg-gradient-to-r from-indigo-600 to-indigo-500 h-3 rounded-full transition-all"
+              className="bg-gradient-to-r from-primary to-accent h-3 rounded-full transition-all"
               style={{ width: `${overallProgress}%` }}
             />
           </div>
@@ -179,7 +179,7 @@ export default function RoadmapPage() {
               <Card key={yearKey} className="p-6 bg-white hover:shadow-lg transition">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-serif text-lg font-semibold text-gray-900">Year {year}</h3>
-                  <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-1 rounded">
+                  <span className="text-xs font-semibold text-accent bg-primary px-2 py-1 rounded">
                     {yearProgress}%
                   </span>
                 </div>
@@ -188,7 +188,7 @@ export default function RoadmapPage() {
 
                 <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
                   <div
-                    className="bg-indigo-600 h-2 rounded-full transition-all"
+                    className="bg-accent h-2 rounded-full transition-all"
                     style={{ width: `${yearProgress}%` }}
                   />
                 </div>
@@ -206,14 +206,14 @@ export default function RoadmapPage() {
                         disabled={isUpdating || loading}
                         className={`w-full flex items-center gap-2 p-2 rounded text-sm transition ${
                           isCompleted
-                            ? 'bg-indigo-50 text-indigo-700'
+                            ? 'bg-primary/10 text-primary border border-primary/20 font-medium'
                             : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
                         }`}
                       >
                         <div
                           className={`flex-shrink-0 h-5 w-5 rounded border-2 flex items-center justify-center transition ${
                             isCompleted
-                              ? 'border-indigo-600 bg-indigo-600'
+                              ? 'border-primary bg-primary'
                               : 'border-gray-300'
                           }`}
                         >
